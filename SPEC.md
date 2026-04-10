@@ -441,7 +441,6 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 
 | 約束 | 說明 |
 |---|---|
-| DC Relay 不可熱切換 | 電流必須降至 5A 以下才能進行 Relay 狀態變更（降流等待） |
 | 最小保證功率 | 每個 Output 啟動充電最低 125kW |
 | 連續區間約束 | 所有分配給同一 Output 的 Group 必須形成不間斷的連續區間 |
 | Ring Topology 約束 | 只有物理相鄰的 MCU 才能進行功率借還 |

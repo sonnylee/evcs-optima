@@ -4,6 +4,7 @@ from tinydb.storages import MemoryStorage
 from simulation.environment.time_controller import TimeController
 from simulation.hardware.charging_station import ChargingStation
 from simulation.log.relay_event_log import RelayEventLog
+from simulation.modules.mcu_control import MCUControl
 from simulation.modules.vehicle import Vehicle
 from simulation.utils.config_loader import SimulationConfig
 
@@ -25,9 +26,10 @@ class SimulationEngine:
         self.station.initialize(dt_index=0)
 
         # Create and connect vehicles
+        board = self.station.rectifier_board
         self.vehicles: list[Vehicle] = []
         profile_map = {p.name: p for p in config.vehicle_profiles}
-        outputs = self.station.rectifier_board.outputs
+        outputs = board.outputs
 
         for vp in config.initial_vehicles:
             profile = profile_map[vp.vehicle_profile_name]
@@ -41,6 +43,17 @@ class SimulationEngine:
             outputs[vp.output_index].connect_vehicle(vehicle)
             self.vehicles.append(vehicle)
 
+        # Build MCU controllers AFTER vehicles connected (so MA state is populated)
+        self.mcu_controls: list[MCUControl] = [
+            MCUControl(
+                mcu_id=0,
+                board=board,
+                module_assignment=self.station.module_assignment,
+                relay_matrix=self.station.relay_matrix,
+                event_log=self.event_log,
+            )
+        ]
+
     def run(self) -> None:
         tc = self.time_controller
         dt = tc.dt
@@ -49,6 +62,10 @@ class SimulationEngine:
             # Step all vehicles first (update SOC, negotiate power)
             for vehicle in self.vehicles:
                 vehicle.step(dt)
+
+            # Step MCU controllers (borrow/return decisions, relay switching)
+            for mcu in self.mcu_controls:
+                mcu.step(dt)
 
             # Step charging station (hardware updates)
             self.station.step(dt)
@@ -70,6 +87,7 @@ class SimulationEngine:
             "time": self.time_controller.current_time,
             "vehicles": [v.get_status() for v in self.vehicles],
             "station": self.station.get_status(),
+            "mcu_controls": [m.get_status() for m in self.mcu_controls],
             "relay_events": [
                 e.to_dict() for e in self.event_log.get_events_at(step_idx)
             ],

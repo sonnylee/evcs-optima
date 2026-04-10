@@ -96,7 +96,6 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 | Constraint | Detail |
 |---|---|
-| DC Relay no hot-switching | Current must drop below 5A before any relay state change |
 | Atomic relay events | Only `SWITCHED` state — no `COMMAND_ISSUED` or `FAILED` intermediates |
 | Contiguous interval | All Groups for one Output must form an unbroken [MIN, MAX] range |
 | Local-first | Use local MCU resources before borrowing from neighbors |
