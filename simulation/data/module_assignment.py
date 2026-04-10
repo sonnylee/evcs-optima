@@ -23,14 +23,17 @@ class ModuleAssignment:
             return  # single MCU: all Groups reachable by all Outputs
         for mcu in range(num_mcus):
             out_base = mcu * 2
-            # Determine which MCU Groups are unreachable from this MCU's Outputs
             for o in range(out_base, out_base + 2):
                 for other_mcu in range(num_mcus):
-                    # Can reach own MCU and adjacent MCUs
-                    distance = min(
-                        abs(other_mcu - mcu),
-                        num_mcus - abs(other_mcu - mcu),
-                    )
+                    if num_mcus >= 4:
+                        # Ring: distance wraps around
+                        distance = min(
+                            abs(other_mcu - mcu),
+                            num_mcus - abs(other_mcu - mcu),
+                        )
+                    else:
+                        # Linear: straight distance
+                        distance = abs(other_mcu - mcu)
                     if distance > 1:
                         g_base = other_mcu * 4
                         for g in range(g_base, g_base + 4):

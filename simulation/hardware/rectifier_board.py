@@ -1,10 +1,16 @@
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 from simulation.base import SimulationModule
 from simulation.hardware.output import Output
 from simulation.hardware.relay import Relay, RelayState, RelayType
 from simulation.hardware.smr_group import SMRGroup
 from simulation.log.relay_event_log import RelayEventLog
+
+if TYPE_CHECKING:
+    from simulation.data.module_assignment import ModuleAssignment
+    from simulation.data.relay_matrix import RelayMatrix
 
 
 # Single MCU layout: G0(50kW) - G1(75kW) - G2(75kW) - G3(50kW)
@@ -19,14 +25,25 @@ class RectifierBoard(SimulationModule):
     Assembles SMR Groups, Relays, and Outputs into the single-MCU topology.
     """
 
-    def __init__(self, mcu_id: int, event_log: RelayEventLog):
+    def __init__(
+        self,
+        mcu_id: int,
+        event_log: RelayEventLog,
+        relay_matrix: RelayMatrix | None = None,
+        module_assignment: ModuleAssignment | None = None,
+    ):
         self.mcu_id = mcu_id
         prefix = f"MCU{mcu_id}"
+        g_base = mcu_id * 4  # global group index offset
 
         # Build 4 SMR Groups
         self.groups: list[SMRGroup] = []
         for i, num_smrs in enumerate(GROUP_CONFIGS):
             self.groups.append(SMRGroup(f"{prefix}_G{i}", num_smrs))
+
+        # Compute matrix indices for relay endpoints
+        num_groups = relay_matrix.num_groups if relay_matrix else 0
+        o_matrix_base = num_groups + mcu_id * 2  # output index in RelayMatrix
 
         # Build inter-group relays: R_01, R_12, R_23
         self.inter_group_relays: list[Relay] = []
@@ -38,6 +55,9 @@ class RectifierBoard(SimulationModule):
                 event_log=event_log,
                 node_a=self.groups[i].group_id,
                 node_b=self.groups[i + 1].group_id,
+                relay_matrix=relay_matrix,
+                matrix_idx_a=g_base + i,
+                matrix_idx_b=g_base + i + 1,
             ))
 
         # Build output relays: R_O0 (O0↔G0), R_O1 (O1↔G3)
@@ -50,6 +70,9 @@ class RectifierBoard(SimulationModule):
                 event_log=event_log,
                 node_a=f"{prefix}_O{i}",
                 node_b=self.groups[group_idx].group_id,
+                relay_matrix=relay_matrix,
+                matrix_idx_a=o_matrix_base + i,
+                matrix_idx_b=g_base + group_idx,
             ))
 
         self.relays = self.output_relays + self.inter_group_relays
@@ -57,9 +80,22 @@ class RectifierBoard(SimulationModule):
         # Build 2 Outputs with fixed Phase 1 allocation
         # O0: anchor=G0, groups={G0, G1}
         # O1: anchor=G3, groups={G2, G3}
+        o_assign_base = mcu_id * 2  # output index in ModuleAssignment
         self.outputs: list[Output] = [
-            Output(f"{prefix}_O0", self.groups[0], [self.groups[0], self.groups[1]]),
-            Output(f"{prefix}_O1", self.groups[3], [self.groups[2], self.groups[3]]),
+            Output(
+                f"{prefix}_O0", self.groups[0],
+                [self.groups[0], self.groups[1]],
+                module_assignment=module_assignment,
+                output_idx=o_assign_base,
+                group_indices=[g_base, g_base + 1],
+            ),
+            Output(
+                f"{prefix}_O1", self.groups[3],
+                [self.groups[2], self.groups[3]],
+                module_assignment=module_assignment,
+                output_idx=o_assign_base + 1,
+                group_indices=[g_base + 2, g_base + 3],
+            ),
         ]
 
     def initialize_relays(self, dt_index: int = 0) -> None:

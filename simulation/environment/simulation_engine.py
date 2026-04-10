@@ -18,8 +18,10 @@ class SimulationEngine:
         self.db = TinyDB(storage=MemoryStorage)
         self.snapshots = self.db.table("snapshots")
 
-        # Build charging station (single MCU for Phase 1)
-        self.station = ChargingStation(mcu_id=0, event_log=self.event_log)
+        # Build charging station
+        self.station = ChargingStation(
+            mcu_id=0, event_log=self.event_log, num_mcus=config.num_mcus,
+        )
         self.station.initialize(dt_index=0)
 
         # Create and connect vehicles
@@ -59,6 +61,10 @@ class SimulationEngine:
 
     def _collect_snapshot(self) -> None:
         step_idx = self.time_controller.step_index
+        violations = self.station.validate()
+        if violations:
+            for v in violations:
+                print(f"  [WARN] step {step_idx}: {v}")
         self.snapshots.insert({
             "step_index": step_idx,
             "time": self.time_controller.current_time,
@@ -67,6 +73,7 @@ class SimulationEngine:
             "relay_events": [
                 e.to_dict() for e in self.event_log.get_events_at(step_idx)
             ],
+            "violations": violations,
         })
 
     def print_summary(self) -> None:
@@ -80,6 +87,18 @@ class SimulationEngine:
             s = v.get_status()
             print(f"  {s['vehicle_id']}: SOC {s['current_soc']:.1f}% "
                   f"(target {s['target_soc']}%), state={s['state']}")
+        print()
+
+        # Print matrix state
+        rm = self.station.relay_matrix
+        ma = self.station.module_assignment
+        print("Relay Matrix (0=open, 1=closed, -1=no wire):")
+        for r in range(rm.size):
+            print(f"  {rm._matrix[r]}")
+        print()
+        print("Module Assignment (0=idle, 1=in use, -1=unreachable):")
+        for o in range(ma.num_outputs):
+            print(f"  O{o}: {ma._matrix[o]}")
         print()
 
         # Print SOC progression at 10% intervals of simulation time

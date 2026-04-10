@@ -610,6 +610,10 @@ asyncio.run(main())
 
 使用 TinyDB (memory) 並且將模擬的系統資料都以 JSON 格式儲存下來
 
+## 15. 建議車輛種類與充電功率關係圖（充電曲線）
+
+以一種車輛種類進行開發與驗證：2024 Tesla Cybertruck Cyberbeast (325 kW, optimized)
+充電功率關係圖（充電曲線）的目錄位址：/assoicate/ev_curve_data.csv
 
 
 ## 附錄 A：參考連結

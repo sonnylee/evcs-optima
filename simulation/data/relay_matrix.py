@@ -35,10 +35,16 @@ class RelayMatrix:
             self._set_pair(base_o, base_g, 0)
             self._set_pair(base_o + 1, base_g + 3, 0)
 
-            # Cross-MCU bridge: last Group of this MCU ↔ first Group of next
-            if self.num_mcus > 1:
+        # Cross-MCU bridges (separate from per-MCU loop)
+        if self.num_mcus >= 4:
+            # Ring topology: all MCUs bridge to next, including wrap-around
+            for mcu in range(self.num_mcus):
                 next_mcu = (mcu + 1) % self.num_mcus
-                self._set_pair(base_g + 3, next_mcu * 4, 0)
+                self._set_pair(mcu * 4 + 3, next_mcu * 4, 0)
+        elif self.num_mcus > 1:
+            # Linear topology: bridges only between consecutive MCUs
+            for mcu in range(self.num_mcus - 1):
+                self._set_pair(mcu * 4 + 3, (mcu + 1) * 4, 0)
 
     def _set_pair(self, a: int, b: int, value: int) -> None:
         self._matrix[a][b] = value

@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from simulation.base import SimulationModule
 from simulation.log.relay_event import RelayEvent
 from simulation.log.relay_event_log import RelayEventLog
+
+if TYPE_CHECKING:
+    from simulation.data.relay_matrix import RelayMatrix
 
 
 class RelayState(str, Enum):
@@ -28,6 +33,9 @@ class Relay(SimulationModule):
         node_a: str,
         node_b: str,
         initial_state: RelayState = RelayState.OPEN,
+        relay_matrix: RelayMatrix | None = None,
+        matrix_idx_a: int = -1,
+        matrix_idx_b: int = -1,
     ):
         self.relay_id = relay_id
         self.relay_type = relay_type
@@ -36,6 +44,9 @@ class Relay(SimulationModule):
         self.node_a = node_a
         self.node_b = node_b
         self.state = initial_state
+        self._relay_matrix = relay_matrix
+        self._matrix_idx_a = matrix_idx_a
+        self._matrix_idx_b = matrix_idx_b
 
     def switch(self, dt_index: int) -> None:
         old = self.state
@@ -48,6 +59,9 @@ class Relay(SimulationModule):
             from_state=old.value,
             to_state=new.value,
         ))
+        if self._relay_matrix is not None:
+            val = 1 if new == RelayState.CLOSED else 0
+            self._relay_matrix.set_state(self._matrix_idx_a, self._matrix_idx_b, val)
 
     def step(self, dt: float) -> None:
         pass  # relay switching is commanded, not time-driven

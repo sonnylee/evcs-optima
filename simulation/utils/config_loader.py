@@ -1,4 +1,6 @@
+import csv
 import json
+import os
 from dataclasses import dataclass, field
 
 
@@ -26,7 +28,12 @@ class SimulationConfig:
     initial_vehicles: list[InitialVehiclePlacement] = field(default_factory=list)
 
 
-# Default EV charging curve (typical CCS profile)
+_CSV_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "associate", "ev_curve_data.csv"
+)
+DEFAULT_VEHICLE_NAME = "2024 Tesla Cybertruck Cyberbeast (325 kW, optimized)"
+
+# Default EV charging curve (typical CCS profile) — fallback reference
 DEFAULT_SOC_POWER_CURVE: list[tuple[float, float]] = [
     (0.0, 50.0),
     (10.0, 100.0),
@@ -41,19 +48,61 @@ DEFAULT_SOC_POWER_CURVE: list[tuple[float, float]] = [
 class ConfigLoader:
 
     @staticmethod
+    def load_csv(csv_path: str | None = None) -> dict[str, VehicleProfile]:
+        """Parse EV charging curves from CSV into VehicleProfile objects."""
+        if csv_path is None:
+            csv_path = _CSV_PATH
+
+        raw_data: dict[str, dict] = {}
+
+        with open(csv_path, newline="") as f:
+            reader = csv.reader(f)
+            next(reader)  # skip header
+            for row in reader:
+                if len(row) < 5:
+                    continue
+                name = row[0].strip()
+                kw_str = row[2].strip()
+                if not kw_str:
+                    continue
+                try:
+                    soc = int(row[1].strip())
+                    kw = float(kw_str)
+                    capacity = float(row[4].strip())
+                except ValueError:
+                    continue
+
+                if name not in raw_data:
+                    raw_data[name] = {"capacity": capacity, "soc_powers": {}}
+                soc_powers = raw_data[name]["soc_powers"]
+                if soc not in soc_powers:
+                    soc_powers[soc] = []
+                soc_powers[soc].append(kw)
+
+        profiles: dict[str, VehicleProfile] = {}
+        for name, data in raw_data.items():
+            curve = sorted(
+                (float(soc), sum(powers) / len(powers))
+                for soc, powers in data["soc_powers"].items()
+            )
+            profiles[name] = VehicleProfile(
+                name=name,
+                battery_capacity_kwh=data["capacity"],
+                soc_power_curve=curve,
+            )
+        return profiles
+
+    @staticmethod
     def load_default() -> SimulationConfig:
-        profile = VehicleProfile(
-            name="standard_ev",
-            battery_capacity_kwh=60.0,
-            soc_power_curve=DEFAULT_SOC_POWER_CURVE,
-        )
+        profiles = ConfigLoader.load_csv()
+        cybertruck = profiles[DEFAULT_VEHICLE_NAME]
         return SimulationConfig(
             dt=1.0,
             t_end=3600.0,
             num_mcus=1,
-            vehicle_profiles=[profile],
+            vehicle_profiles=[cybertruck],
             initial_vehicles=[
-                InitialVehiclePlacement("standard_ev", 0, 20.0, 80.0),
+                InitialVehiclePlacement(cybertruck.name, 0, 20.0, 80.0),
             ],
         )
 
