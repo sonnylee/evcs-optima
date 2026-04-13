@@ -613,6 +613,24 @@ asyncio.run(main())
 以一種車輛種類進行開發與驗證：2024 Tesla Cybertruck Cyberbeast (325 kW, optimized)
 充電功率關係圖（充電曲線）的目錄位址：/assoicate/ev_curve_data.csv
 
+## 16. 來車情境
+
+| 編號 | 組合類型(n) | 0個ONMCU數 | 1個ONMCU數 | 2個ONMCU數 | 總開啟Output數 | 組合範例說明 |
+|------|------------|-----------|-----------|-----------|--------------|------------|
+| 1 | (3, 1, 0) | 3 | 1 | 0 | 1 | MCU1(O1:ON, O2:OFF) ; MCU2(O1:OFF, O2:OFF) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 2 | (2, 2, 0) | 2 | 2 | 0 | 2 | MCU1(O1:ON, O2:OFF) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 3 | (3, 0, 1) | 3 | 0 | 1 | 2 | MCU1(O1:ON, O2:ON) ; MCU2(O1:OFF, O2:OFF) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 4 | (1, 3, 0) | 1 | 3 | 0 | 3 | MCU1(O1:ON, O2:OFF) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 5 | (2, 1, 1) | 2 | 1 | 1 | 3 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 6 | (0, 4, 0) | 0 | 4 | 0 | 4 | MCU1(O1:ON, O2:OFF) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:ON, O2:OFF) |
+| 7 | (1, 2, 1) | 1 | 2 | 1 | 4 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 8 | (2, 0, 2) | 2 | 0 | 2 | 4 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 9 | (0, 3, 1) | 0 | 3 | 1 | 5 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:OFF) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:ON, O2:OFF) |
+| 10 | (1, 1, 2) | 1 | 1 | 2 | 5 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
+| 11 | (0, 2, 2) | 0 | 2 | 2 | 6 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:OFF) ; MCU4(O1:ON, O2:OFF) |
+| 12 | (1, 0, 3) | 1 | 0 | 3 | 6 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:OFF, O2:OFF) |
+| 13 | (0, 1, 3) | 0 | 1 | 3 | 7 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:ON, O2:OFF) |
+| 14 | (0, 0, 4) | 0 | 0 | 4 | 8 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:ON, O2:ON) |
 
 ## 附錄 A：參考連結
 
