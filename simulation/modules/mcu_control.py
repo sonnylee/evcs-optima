@@ -1,14 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from simulation.base import SimulationModule
+from simulation.communication.borrow_protocol import send_borrow_request
+from simulation.communication.messages import (
+    BorrowRequest,
+    ConflictRelease,
+    ReturnNotify,
+    Stop,
+    Tick,
+)
+from simulation.communication.return_protocol import (
+    send_conflict_release,
+    send_return_notify,
+)
+from simulation.environment.actor import Actor
 from simulation.hardware.relay import RelayState
 
 if TYPE_CHECKING:
     from simulation.data.module_assignment import ModuleAssignment
     from simulation.data.relay_matrix import RelayMatrix
+    from simulation.hardware.charging_station import ChargingStation
     from simulation.hardware.rectifier_board import RectifierBoard
     from simulation.hardware.relay import Relay
     from simulation.log.relay_event_log import RelayEventLog
@@ -19,8 +34,6 @@ CONSECUTIVE_THRESHOLD: int = 3
 
 @dataclass
 class OutputPowerState:
-    """Per-output tracking for borrow/return decision counters."""
-
     output_local_idx: int
     anchor_group_idx: int  # global group index
     borrow_counter: int = 0
@@ -29,12 +42,8 @@ class OutputPowerState:
     interval_max: int | None = None
 
 
-class MCUControl(SimulationModule):
-    """Business logic core for a single MCU.
-
-    Monitors Present Power vs Available Power per Output and executes
-    borrow/return strategies by switching relays and updating ModuleAssignment.
-    """
+class MCUControl(Actor, SimulationModule):
+    """Business logic for one MCU. Actor for cross-MCU messaging."""
 
     def __init__(
         self,
@@ -43,17 +52,25 @@ class MCUControl(SimulationModule):
         module_assignment: ModuleAssignment,
         relay_matrix: RelayMatrix,
         event_log: RelayEventLog,
+        station: ChargingStation | None = None,
+        num_mcus: int = 1,
     ):
+        Actor.__init__(self, name=f"MCU{mcu_id}")
         self._mcu_id = mcu_id
         self._board = board
         self._ma = module_assignment
         self._rm = relay_matrix
         self._event_log = event_log
+        self._station = station
+        self._num_mcus = num_mcus
         self._step_index: int = 0
         self._group_base: int = mcu_id * 4
         self._output_base: int = mcu_id * 2
 
-        # Build per-output state, discovering current intervals from MA
+        # Neighbor actor refs (wired post-construction by engine)
+        self.left_neighbor: MCUControl | None = None
+        self.right_neighbor: MCUControl | None = None
+
         self._output_states: list[OutputPowerState] = []
         anchor_locals = [0, 3]
         for i in range(2):
@@ -68,17 +85,32 @@ class MCUControl(SimulationModule):
                 state.interval_max = max(groups)
             self._output_states.append(state)
 
-        # Align relay state with discovered intervals
         self._apply_global_relay_state()
 
-    # ── Public interface ─────────────────────────────────────────────
+    # ── Actor handle ──────────────────────────────────────────────────
+
+    async def handle(self, msg: Any) -> None:
+        if isinstance(msg, Tick):
+            await self._handle_tick(msg)
+        elif isinstance(msg, BorrowRequest):
+            await self._handle_borrow_request(msg)
+        elif isinstance(msg, ReturnNotify):
+            await self._handle_return_notify(msg)
+        elif isinstance(msg, ConflictRelease):
+            await self._handle_conflict_release(msg)
+        elif isinstance(msg, Stop):
+            self.stop()
+
+    # ── Synchronous step (Phase 3 back-compat) ───────────────────────
 
     def step(self, dt: float) -> None:
+        """Synchronous local-only step (used by legacy single-MCU paths)."""
         self._step_index += 1
+        self._run_local_logic()
 
+    def _run_local_logic(self) -> None:
         for i, output in enumerate(self._board.outputs):
             state = self._output_states[i]
-
             if output.connected_vehicle is None:
                 state.borrow_counter = 0
                 state.return_counter = 0
@@ -88,7 +120,6 @@ class MCUControl(SimulationModule):
             present = output.present_power_kw
             available = output.available_power_kw
 
-            # ── Borrow evaluation ──
             if (
                 present > 0
                 and abs(present - available) < 0.01
@@ -99,10 +130,9 @@ class MCUControl(SimulationModule):
                 state.borrow_counter = 0
 
             if state.borrow_counter >= CONSECUTIVE_THRESHOLD:
-                self._try_borrow(state)
+                self._try_borrow_local(state)
                 state.borrow_counter = 0
 
-            # ── Return evaluation ──
             edge_power = self._smallest_edge_group_power(state)
             surplus = available - present
             if edge_power is not None and surplus >= edge_power - 0.01:
@@ -111,8 +141,379 @@ class MCUControl(SimulationModule):
                 state.return_counter = 0
 
             if state.return_counter >= CONSECUTIVE_THRESHOLD:
-                self._try_return(state)
+                self._try_return_local(state)
                 state.return_counter = 0
+
+    # ── Async tick (Phase 4) ─────────────────────────────────────────
+
+    async def _handle_tick(self, tick: Tick) -> None:
+        self._step_index = tick.step_index
+        try:
+            for i, output in enumerate(self._board.outputs):
+                state = self._output_states[i]
+                if output.connected_vehicle is None:
+                    state.borrow_counter = 0
+                    state.return_counter = 0
+                    continue
+
+                vehicle = output.connected_vehicle
+                present = output.present_power_kw
+                available = output.available_power_kw
+
+                if (
+                    present > 0
+                    and abs(present - available) < 0.01
+                    and vehicle.max_require_power_kw > available + 0.01
+                ):
+                    state.borrow_counter += 1
+                else:
+                    state.borrow_counter = 0
+
+                if state.borrow_counter >= CONSECUTIVE_THRESHOLD:
+                    await self._try_borrow_async(state)
+                    state.borrow_counter = 0
+
+                edge_power = self._smallest_edge_group_power(state)
+                surplus = available - present
+                if edge_power is not None and surplus >= edge_power - 0.01:
+                    state.return_counter += 1
+                else:
+                    state.return_counter = 0
+
+                if state.return_counter >= CONSECUTIVE_THRESHOLD:
+                    await self._try_return_async(state)
+                    state.return_counter = 0
+        finally:
+            tick.done.set()
+
+    # ── Borrow / Return (local only) ─────────────────────────────────
+
+    def _try_borrow_local(self, state: OutputPowerState) -> None:
+        target = self._find_expansion_target(state, allow_cross_mcu=False)
+        if target is None:
+            return
+        self._apply_borrow(state, target)
+
+    def _try_return_local(self, state: OutputPowerState) -> None:
+        target = self._find_shrink_target(state, prefer_cross_mcu=False)
+        if target is None:
+            return
+        self._apply_return(state, target)
+
+    # ── Borrow / Return (async, cross-MCU aware) ─────────────────────
+
+    async def _try_borrow_async(self, state: OutputPowerState) -> None:
+        target = self._find_expansion_target(state, allow_cross_mcu=True)
+        if target is None:
+            return
+
+        if self._is_local_group(target):
+            self._apply_borrow(state, target)
+            return
+
+        # Cross-MCU: determine which neighbor owns the target group
+        neighbor_mcu = target // 4
+        if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
+            neighbor = self.right_neighbor
+        else:
+            neighbor = self.left_neighbor
+
+        granted = await send_borrow_request(neighbor, self._mcu_id, target)
+        if granted:
+            self._apply_borrow(state, target)
+
+    async def _try_return_async(self, state: OutputPowerState) -> None:
+        target = self._find_shrink_target(state, prefer_cross_mcu=True)
+        if target is None:
+            return
+
+        if not self._is_local_group(target):
+            neighbor_mcu = target // 4
+            if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
+                neighbor = self.right_neighbor
+            else:
+                neighbor = self.left_neighbor
+            await send_return_notify(neighbor, self._mcu_id, target)
+
+        self._apply_return(state, target)
+
+    def _apply_borrow(self, state: OutputPowerState, target: int) -> None:
+        if state.interval_min is None or state.interval_max is None:
+            return
+        if target < state.interval_min:
+            state.interval_min = target
+        else:
+            state.interval_max = target
+        self._apply_global_relay_state()
+        output_idx = self._output_base + state.output_local_idx
+        self._ma.assign(output_idx, target)
+        self._sync_output(state.output_local_idx)
+
+    def _apply_return(self, state: OutputPowerState, target: int) -> None:
+        if state.interval_min is None or state.interval_max is None:
+            return
+        if target == state.interval_min:
+            state.interval_min = target + 1
+        else:
+            state.interval_max = target - 1
+        self._apply_global_relay_state()
+        output_idx = self._output_base + state.output_local_idx
+        self._ma.release(output_idx, target)
+        self._sync_output(state.output_local_idx)
+
+    # ── Incoming protocol handlers ───────────────────────────────────
+
+    async def _handle_borrow_request(self, msg: BorrowRequest) -> None:
+        """Neighbor asks to borrow group `msg.group_idx` (in our territory)."""
+        # Grant iff idle, reachable by requester, and not breaking our minimum
+        owner = self._ma.get_owner(msg.group_idx)
+        granted = False
+        if owner is None:
+            # Also ensure we ourselves don't currently need this group
+            # (only our outputs could need it; they would already own it)
+            granted = True
+        msg.response.set_result(granted)
+
+    async def _handle_return_notify(self, msg: ReturnNotify) -> None:
+        """Neighbor informs us they are releasing a group in our territory."""
+        msg.response.set_result(True)
+
+    async def _handle_conflict_release(self, msg: ConflictRelease) -> None:
+        """Neighbor needs a group we own; forcibly release from the owning output."""
+        owner = self._ma.get_owner(msg.group_idx)
+        if owner is None:
+            msg.response.set_result(True)
+            return
+        local_out = owner - self._output_base
+        if 0 <= local_out < 2:
+            self._force_return_group(local_out, msg.group_idx)
+        msg.response.set_result(self._ma.get_owner(msg.group_idx) is None)
+
+    # ── Vehicle lifecycle ────────────────────────────────────────────
+
+    def handle_vehicle_arrival(self, output_local_idx: int) -> None:
+        state = self._output_states[output_local_idx]
+        if output_local_idx == 0:
+            required_min = self._group_base
+            required_max = self._group_base + 1
+        else:
+            required_min = self._group_base + 2
+            required_max = self._group_base + 3
+
+        for g in range(required_min, required_max + 1):
+            owner = self._ma.get_owner(g)
+            if owner is not None and owner != self._output_base + output_local_idx:
+                other_local = owner - self._output_base
+                if 0 <= other_local < 2:
+                    self._force_return_group(other_local, g)
+
+        state.interval_min = required_min
+        state.interval_max = required_max
+        state.borrow_counter = 0
+        state.return_counter = 0
+
+        for g in range(required_min, required_max + 1):
+            if self._ma.get_owner(g) is None:
+                self._ma.assign(self._output_base + output_local_idx, g)
+        self._apply_global_relay_state()
+        self._sync_output(output_local_idx)
+
+    def handle_vehicle_departure(self, output_local_idx: int) -> None:
+        state = self._output_states[output_local_idx]
+        output_idx = self._output_base + output_local_idx
+
+        if state.interval_min is not None:
+            for g in range(state.interval_min, state.interval_max + 1):
+                if self._ma.get_owner(g) == output_idx:
+                    self._ma.release(output_idx, g)
+
+        state.interval_min = None
+        state.interval_max = None
+        state.borrow_counter = 0
+        state.return_counter = 0
+
+        self._apply_global_relay_state()
+        self._sync_output(output_local_idx)
+
+    # ── Force return ─────────────────────────────────────────────────
+
+    def _force_return_group(self, other_local_idx: int, group_idx: int) -> None:
+        state = self._output_states[other_local_idx]
+        if state.interval_min is None:
+            return
+        output_idx = self._output_base + other_local_idx
+
+        if state.anchor_group_idx < group_idx:
+            while (
+                state.interval_max is not None
+                and state.interval_max >= group_idx
+                and state.interval_max > state.anchor_group_idx
+            ):
+                released = state.interval_max
+                state.interval_max -= 1
+                if self._ma.get_owner(released) == output_idx:
+                    self._ma.release(output_idx, released)
+        else:
+            while (
+                state.interval_min is not None
+                and state.interval_min <= group_idx
+                and state.interval_min < state.anchor_group_idx
+            ):
+                released = state.interval_min
+                state.interval_min += 1
+                if self._ma.get_owner(released) == output_idx:
+                    self._ma.release(output_idx, released)
+
+        self._apply_global_relay_state()
+        self._sync_output(other_local_idx)
+
+    # ── Target selection ─────────────────────────────────────────────
+
+    def _find_expansion_target(
+        self, state: OutputPowerState, allow_cross_mcu: bool
+    ) -> int | None:
+        """Priority: right > left."""
+        if state.interval_min is None or state.interval_max is None:
+            return None
+        output_idx = self._output_base + state.output_local_idx
+        right = state.interval_max + 1
+        left = state.interval_min - 1
+
+        if self._can_assign(output_idx, right, allow_cross_mcu):
+            return right
+        if self._can_assign(output_idx, left, allow_cross_mcu):
+            return left
+        return None
+
+    def _find_shrink_target(
+        self, state: OutputPowerState, prefer_cross_mcu: bool
+    ) -> int | None:
+        """Anchor returned last. Prefer cross-MCU edges when requested."""
+        if state.interval_min is None or state.interval_max is None:
+            return None
+        if state.interval_min == state.interval_max:
+            return None
+
+        candidates: list[int] = []
+        if state.interval_min != state.anchor_group_idx:
+            candidates.append(state.interval_min)
+        if state.interval_max != state.anchor_group_idx:
+            candidates.append(state.interval_max)
+        if not candidates:
+            return None
+
+        if prefer_cross_mcu:
+            cross = [c for c in candidates if not self._is_local_group(c)]
+            if cross:
+                return cross[0]
+        # Default: outer edge opposite the anchor
+        if state.interval_min == state.anchor_group_idx:
+            return state.interval_max
+        return state.interval_min
+
+    def _can_assign(
+        self, output_idx: int, global_group_idx: int, allow_cross_mcu: bool
+    ) -> bool:
+        if global_group_idx < 0 or global_group_idx >= self._ma.num_groups:
+            return False
+        if not allow_cross_mcu and not self._is_local_group(global_group_idx):
+            return False
+        if self._ma._matrix[output_idx][global_group_idx] == -1:
+            return False
+        if self._ma.get_owner(global_group_idx) is not None:
+            return False
+        return True
+
+    # ── Relay state management ───────────────────────────────────────
+
+    def _apply_global_relay_state(self) -> None:
+        """Toggle relays owned by this MCU to match union of output requirements."""
+        needed: set[Relay] = set()
+        for state in self._output_states:
+            if state.interval_min is not None:
+                needed.update(self._compute_required_relays(
+                    state.output_local_idx, state.interval_min, state.interval_max
+                ))
+
+        all_relays = list(self._board.output_relays) + list(self._board.inter_group_relays)
+        if self._board.right_bridge_relay is not None:
+            all_relays.append(self._board.right_bridge_relay)
+
+        for r in all_relays:
+            if r.state == RelayState.CLOSED and r not in needed:
+                r.switch(self._step_index)
+        for r in needed:
+            if r.state == RelayState.OPEN:
+                r.switch(self._step_index)
+
+    def _compute_required_relays(
+        self, output_local_idx: int, new_min: int, new_max: int
+    ) -> list[Relay]:
+        """Relays owned by THIS MCU that must be CLOSED for this interval."""
+        relays: list[Relay] = [self._board.output_relays[output_local_idx]]
+
+        # Local inter-group relays (within this MCU's 4 groups)
+        local_lo = max(new_min, self._group_base)
+        local_hi = min(new_max, self._group_base + 3)
+        for g in range(local_lo, local_hi):
+            local_i = g - self._group_base
+            if 0 <= local_i < 3:
+                relays.append(self._board.inter_group_relays[local_i])
+
+        # Right bridge: needed iff interval spans from this MCU into next
+        if (
+            self._board.right_bridge_relay is not None
+            and new_min <= self._group_base + 3
+            and new_max >= self._group_base + 4
+        ):
+            relays.append(self._board.right_bridge_relay)
+
+        # Left bridge (owned by prev MCU): needed iff interval extends left into prev MCU
+        if (
+            self._station is not None
+            and new_min < self._group_base
+            and new_max >= self._group_base
+        ):
+            prev_mcu = (self._mcu_id - 1 + self._num_mcus) % self._num_mcus
+            br = self._station.bridge_relay_between(prev_mcu)
+            if br is not None:
+                relays.append(br)
+
+        return relays
+
+    # ── Output sync ──────────────────────────────────────────────────
+
+    def _sync_output(self, output_local_idx: int) -> None:
+        state = self._output_states[output_local_idx]
+        output = self._board.outputs[output_local_idx]
+
+        if state.interval_min is None or state.interval_max is None:
+            output.groups = [output.anchor_group]
+            output.available_power_kw = 0.0
+            output._group_indices = []
+            return
+
+        # Build group list by walking from interval_min to interval_max globally.
+        # Cross-MCU groups are fetched from the station's boards.
+        groups = []
+        total_power = 0.0
+        for g_global in range(state.interval_min, state.interval_max + 1):
+            mcu = g_global // 4
+            local = g_global % 4
+            if self._station is not None and 0 <= mcu < len(self._station.boards):
+                grp = self._station.boards[mcu].groups[local]
+            elif mcu == self._mcu_id:
+                grp = self._board.groups[local]
+            else:
+                continue
+            groups.append(grp)
+            total_power += grp.total_power_kw
+
+        output.groups = groups
+        output.available_power_kw = total_power
+        output._group_indices = list(range(state.interval_min, state.interval_max + 1))
+
+    # ── Status / helpers ─────────────────────────────────────────────
 
     def get_status(self) -> dict[str, Any]:
         return {
@@ -134,225 +535,6 @@ class MCUControl(SimulationModule):
             ],
         }
 
-    def handle_vehicle_arrival(self, output_local_idx: int) -> None:
-        """Called when a new vehicle connects. Detect and resolve conflicts."""
-        state = self._output_states[output_local_idx]
-        output = self._board.outputs[output_local_idx]
-
-        # Minimum 125 kW = anchor + 1 adjacent
-        if output_local_idx == 0:
-            required_min = self._group_base
-            required_max = self._group_base + 1
-        else:
-            required_min = self._group_base + 2
-            required_max = self._group_base + 3
-
-        # Resolve conflicts: force-return any borrowed groups in our required range
-        for g in range(required_min, required_max + 1):
-            owner = self._ma.get_owner(g)
-            if owner is not None and owner != self._output_base + output_local_idx:
-                other_local = owner - self._output_base
-                self._force_return_group(other_local, g)
-
-        # Set up interval
-        state.interval_min = required_min
-        state.interval_max = required_max
-        state.borrow_counter = 0
-        state.return_counter = 0
-
-        # Configure MA and relays
-        for g in range(required_min, required_max + 1):
-            self._ma.assign(self._output_base + output_local_idx, g)
-        self._apply_global_relay_state()
-        self._sync_output(output_local_idx)
-
-    def handle_vehicle_departure(self, output_local_idx: int) -> None:
-        """Called when a vehicle finishes or disconnects."""
-        state = self._output_states[output_local_idx]
-        output_idx = self._output_base + output_local_idx
-
-        if state.interval_min is not None:
-            for g in range(state.interval_min, state.interval_max + 1):
-                self._ma.release(output_idx, g)
-
-        state.interval_min = None
-        state.interval_max = None
-        state.borrow_counter = 0
-        state.return_counter = 0
-
-        self._apply_global_relay_state()
-        self._sync_output(output_local_idx)
-
-    # ── Borrow / Return ──────────────────────────────────────────────
-
-    def _try_borrow(self, state: OutputPowerState) -> None:
-        target = self._find_expansion_target(state)
-        if target is None:
-            return
-
-        old_min, old_max = state.interval_min, state.interval_max
-        if target < state.interval_min:
-            state.interval_min = target
-        else:
-            state.interval_max = target
-
-        self._reconfigure_relays(
-            state.output_local_idx, state.interval_min, state.interval_max
-        )
-        # Update MA: assign the new group
-        output_idx = self._output_base + state.output_local_idx
-        self._ma.assign(output_idx, target)
-        self._sync_output(state.output_local_idx)
-
-    def _try_return(self, state: OutputPowerState) -> None:
-        target = self._find_shrink_target(state)
-        if target is None:
-            return
-
-        old_min, old_max = state.interval_min, state.interval_max
-        if target == state.interval_min:
-            state.interval_min = target + 1
-        else:
-            state.interval_max = target - 1
-
-        self._reconfigure_relays(
-            state.output_local_idx, state.interval_min, state.interval_max
-        )
-        output_idx = self._output_base + state.output_local_idx
-        self._ma.release(output_idx, target)
-        self._sync_output(state.output_local_idx)
-
-    def _find_expansion_target(self, state: OutputPowerState) -> int | None:
-        """Find the next group to borrow. Priority: right > left."""
-        right = state.interval_max + 1
-        left = state.interval_min - 1
-        output_idx = self._output_base + state.output_local_idx
-
-        # Right first
-        if self._can_assign(output_idx, right):
-            return right
-        # Left second
-        if self._can_assign(output_idx, left):
-            return left
-        return None
-
-    def _find_shrink_target(self, state: OutputPowerState) -> int | None:
-        """Find the edge group to return. Anchor is returned last.
-
-        Phase 3 (all local):
-          - If MIN == anchor -> return MAX
-          - Else -> return MIN
-        """
-        if state.interval_min == state.interval_max:
-            return None  # only anchor remains
-
-        if state.interval_min == state.anchor_group_idx:
-            return state.interval_max
-        else:
-            return state.interval_min
-
-    def _force_return_group(self, other_local_idx: int, group_idx: int) -> None:
-        """Force another output to release groups until group_idx is free."""
-        state = self._output_states[other_local_idx]
-        if state.interval_min is None:
-            return
-
-        output_idx = self._output_base + other_local_idx
-
-        # Determine which side to shrink based on anchor position
-        if state.anchor_group_idx < group_idx:
-            # Group is on the right side of anchor -> shrink MAX
-            while state.interval_max >= group_idx and state.interval_max > state.anchor_group_idx:
-                released = state.interval_max
-                state.interval_max -= 1
-                self._ma.release(output_idx, released)
-        else:
-            # Group is on the left side of anchor -> shrink MIN
-            while state.interval_min <= group_idx and state.interval_min < state.anchor_group_idx:
-                released = state.interval_min
-                state.interval_min += 1
-                self._ma.release(output_idx, released)
-
-        self._apply_global_relay_state()
-        self._sync_output(other_local_idx)
-
-    # ── Relay switching ──────────────────────────────────────────────
-
-    def _reconfigure_relays(
-        self, output_local_idx: int, new_min: int, new_max: int
-    ) -> None:
-        """Reconfigure all relays based on BOTH outputs' current intervals.
-
-        Inter-group relays are shared, so we compute the global needed set
-        from all active outputs to avoid opening relays another output needs.
-        """
-        # Temporarily update the state for the target output
-        # (caller has already updated interval_min/max)
-        self._apply_global_relay_state()
-
-    def _apply_global_relay_state(self) -> None:
-        """Set all relays to match the union of both outputs' requirements."""
-        needed: set[Relay] = set()
-        for state in self._output_states:
-            if state.interval_min is not None:
-                needed.update(self._compute_required_relays(
-                    state.output_local_idx, state.interval_min, state.interval_max
-                ))
-
-        all_relays = self._board.output_relays + self._board.inter_group_relays
-
-        # Phase 1: open relays not needed by any output
-        for r in all_relays:
-            if r.state == RelayState.CLOSED and r not in needed:
-                r.switch(self._step_index)
-
-        # Phase 2: close relays needed
-        for r in needed:
-            if r.state == RelayState.OPEN:
-                r.switch(self._step_index)
-
-    def _compute_required_relays(
-        self, output_local_idx: int, new_min: int, new_max: int
-    ) -> list[Relay]:
-        """Relays that must be CLOSED for the given interval."""
-        min_local = self._global_to_local(new_min)
-        max_local = self._global_to_local(new_max)
-        relays: list[Relay] = []
-
-        # Output relay is always needed
-        relays.append(self._board.output_relays[output_local_idx])
-
-        # Inter-group relays for contiguous chain
-        for i in range(min_local, max_local):
-            relays.append(self._board.inter_group_relays[i])
-
-        return relays
-
-    # ── Output sync ──────────────────────────────────────────────────
-
-    def _sync_output(self, output_local_idx: int) -> None:
-        """Sync Output object's groups list and available_power from interval."""
-        state = self._output_states[output_local_idx]
-        output = self._board.outputs[output_local_idx]
-
-        if state.interval_min is None or state.interval_max is None:
-            output.groups = [output.anchor_group]
-            output.available_power_kw = 0.0
-            output._group_indices = []
-            return
-
-        min_local = self._global_to_local(state.interval_min)
-        max_local = self._global_to_local(state.interval_max)
-        output.groups = [
-            self._board.groups[i] for i in range(min_local, max_local + 1)
-        ]
-        output.available_power_kw = sum(g.total_power_kw for g in output.groups)
-        output._group_indices = list(
-            range(state.interval_min, state.interval_max + 1)
-        )
-
-    # ── Helpers ───────────────────────────────────────────────────────
-
     def _global_to_local(self, global_idx: int) -> int:
         return global_idx - self._group_base
 
@@ -363,20 +545,14 @@ class MCUControl(SimulationModule):
         local = global_idx - self._group_base
         return 0 <= local < 4
 
-    def _can_assign(self, output_idx: int, global_group_idx: int) -> bool:
-        """Check if a group can be assigned: local, idle, and reachable."""
-        if not self._is_local_group(global_group_idx):
-            return False
-        if self._ma.get_owner(global_group_idx) is not None:
-            return False
-        if self._ma._matrix[output_idx][global_group_idx] == -1:
-            return False
-        return True
-
     def _smallest_edge_group_power(self, state: OutputPowerState) -> float | None:
-        """Power of the outermost releasable group (for return threshold)."""
-        target = self._find_shrink_target(state)
+        target = self._find_shrink_target(state, prefer_cross_mcu=False)
         if target is None:
             return None
-        local = self._global_to_local(target)
-        return self._board.groups[local].total_power_kw
+        mcu = target // 4
+        local = target % 4
+        if self._station is not None and 0 <= mcu < len(self._station.boards):
+            return self._station.boards[mcu].groups[local].total_power_kw
+        if self._is_local_group(target):
+            return self._board.groups[local].total_power_kw
+        return None

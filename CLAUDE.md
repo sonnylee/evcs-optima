@@ -99,7 +99,6 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 | Atomic relay events | Only `SWITCHED` state — no `COMMAND_ISSUED` or `FAILED` intermediates |
 | Contiguous interval | All Groups for one Output must form an unbroken [MIN, MAX] range |
 | Local-first | Use local MCU resources before borrowing from neighbors |
-| `is_cross_mcu` | This is a Relay attribute — never compute it dynamically or pass it in messages |
 
 ## Recommended Implementation Order
 

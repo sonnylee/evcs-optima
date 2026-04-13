@@ -10,33 +10,62 @@ from simulation.log.relay_event_log import RelayEventLog
 class ChargingStation(SimulationModule):
     """Charging station shell — global container, no business logic."""
 
-    def __init__(self, mcu_id: int, event_log: RelayEventLog, num_mcus: int = 1):
-        self.mcu_id = mcu_id
+    def __init__(self, mcu_id: int = 0, event_log: RelayEventLog | None = None, num_mcus: int = 1):
+        self.mcu_id = mcu_id  # kept for back-compat (legacy single-MCU demos)
         self.num_mcus = num_mcus
+        self.event_log = event_log if event_log is not None else RelayEventLog()
         self.relay_matrix = RelayMatrix(num_mcus)
         self.module_assignment = ModuleAssignment(
             num_outputs=2 * num_mcus,
             num_groups=4 * num_mcus,
             num_mcus=num_mcus,
         )
-        self.rectifier_board = RectifierBoard(
-            mcu_id, event_log,
-            relay_matrix=self.relay_matrix,
-            module_assignment=self.module_assignment,
-        )
+
+        # Determine which MCUs own a right bridge:
+        # - ring (num_mcus >= 4): every MCU owns its right bridge (wrap-around)
+        # - linear (1 < num_mcus < 4): all MCUs except the last own a right bridge
+        # - single MCU: no bridges
+        def has_right_bridge(i: int) -> bool:
+            if num_mcus <= 1:
+                return False
+            if num_mcus >= 4:
+                return True
+            return i < num_mcus - 1
+
+        self.boards: list[RectifierBoard] = [
+            RectifierBoard(
+                mcu_id=i,
+                event_log=self.event_log,
+                relay_matrix=self.relay_matrix,
+                module_assignment=self.module_assignment,
+                num_mcus=num_mcus,
+                has_right_bridge=has_right_bridge(i),
+            )
+            for i in range(num_mcus)
+        ]
+
+    @property
+    def rectifier_board(self) -> RectifierBoard:
+        """Back-compat alias for single-MCU callers."""
+        return self.boards[0]
 
     def initialize(self, dt_index: int = 0) -> None:
-        self.rectifier_board.initialize_relays(dt_index)
+        for b in self.boards:
+            b.initialize_relays(dt_index)
+
+    def bridge_relay_between(self, left_mcu: int):
+        """Return the bridge relay owned by `left_mcu` (i.e., left_mcu ↔ left_mcu+1)."""
+        if 0 <= left_mcu < len(self.boards):
+            return self.boards[left_mcu].right_bridge_relay
+        return None
 
     def validate(self) -> list[str]:
-        """Check matrix consistency. Returns list of violation strings."""
         violations: list[str] = []
         ma = self.module_assignment
         for o in range(ma.num_outputs):
             groups = ma.get_groups_for_output(o)
             if groups and not ma.is_contiguous(o):
                 violations.append(f"Output {o}: non-contiguous groups {groups}")
-        # Check no double-ownership
         for g in range(ma.num_groups):
             owners = [o for o in range(ma.num_outputs) if ma._matrix[o][g] == 1]
             if len(owners) > 1:
@@ -44,12 +73,13 @@ class ChargingStation(SimulationModule):
         return violations
 
     def step(self, dt: float) -> None:
-        self.rectifier_board.step(dt)
+        for b in self.boards:
+            b.step(dt)
 
     def get_status(self) -> dict[str, Any]:
         return {
-            "mcu_id": self.mcu_id,
-            "rectifier_board": self.rectifier_board.get_status(),
+            "num_mcus": self.num_mcus,
+            "boards": [b.get_status() for b in self.boards],
             "relay_matrix": self.relay_matrix.to_dict(),
             "module_assignment": self.module_assignment.to_dict(),
         }

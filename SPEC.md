@@ -446,7 +446,6 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 | Ring Topology 約束 | 只有物理相鄰的 MCU 才能進行功率借還 |
 | 借電優先級 | 右 > 左 > 雙側 |
 | Relay 切換為原子操作 | 無 `COMMAND_ISSUED` 或 `FAILED` 中間狀態，只有 `SWITCHED` |
-| `is_cross_mcu` 為 Relay 屬性 | 已定義在 Relay 物件本身，不需計算或在交握訊息中傳輸 |
 
 ---
 

@@ -31,8 +31,11 @@ class RectifierBoard(SimulationModule):
         event_log: RelayEventLog,
         relay_matrix: RelayMatrix | None = None,
         module_assignment: ModuleAssignment | None = None,
+        num_mcus: int = 1,
+        has_right_bridge: bool = False,
     ):
         self.mcu_id = mcu_id
+        self.num_mcus = num_mcus
         prefix = f"MCU{mcu_id}"
         g_base = mcu_id * 4  # global group index offset
 
@@ -75,7 +78,25 @@ class RectifierBoard(SimulationModule):
                 matrix_idx_b=g_base + group_idx,
             ))
 
-        self.relays = self.output_relays + self.inter_group_relays
+        # Build right bridge relay (to next MCU) if applicable
+        self.right_bridge_relay: Relay | None = None
+        if has_right_bridge and num_mcus > 1:
+            next_mcu = (mcu_id + 1) % num_mcus
+            self.right_bridge_relay = Relay(
+                relay_id=f"{prefix}_BR",
+                relay_type=RelayType.INTER_GROUP,
+                is_cross_mcu=True,
+                event_log=event_log,
+                node_a=self.groups[3].group_id,
+                node_b=f"MCU{next_mcu}_G0",
+                relay_matrix=relay_matrix,
+                matrix_idx_a=g_base + 3,
+                matrix_idx_b=next_mcu * 4,
+            )
+
+        self.relays = list(self.output_relays) + list(self.inter_group_relays)
+        if self.right_bridge_relay is not None:
+            self.relays.append(self.right_bridge_relay)
 
         # Build 2 Outputs with fixed Phase 1 allocation
         # O0: anchor=G0, groups={G0, G1}
