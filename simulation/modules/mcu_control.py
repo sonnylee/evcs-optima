@@ -40,6 +40,17 @@ class OutputPowerState:
     return_counter: int = 0
     interval_min: int | None = None
     interval_max: int | None = None
+    # 0 = no pending action; 1 = armed (skip this tick); 2 = close on next tick.
+    # Two-phase arrival: close the output power-switch relay one step after
+    # the anchor inter-group relay so the 125 kW path is formed first.
+    pending_output_relay_close: int = 0
+    pending_intergroup_close: int = 0
+    # Two-phase departure (SPEC §11): open inter-group relays first, then the
+    # output power-switch relay. Mirrors the 1-tick armed / 2-tick execute
+    # state machine used for arrival closures.
+    pending_intergroup_open: int = 0
+    pending_output_relay_open: int = 0
+    gun_live_ticks: int = 0
 
 
 class MCUControl(Actor, SimulationModule):
@@ -114,6 +125,10 @@ class MCUControl(Actor, SimulationModule):
             if output.connected_vehicle is None:
                 state.borrow_counter = 0
                 state.return_counter = 0
+                state.gun_live_ticks = 0
+                continue
+
+            if self._advance_relay_phases(state):
                 continue
 
             vehicle = output.connected_vehicle
@@ -134,8 +149,8 @@ class MCUControl(Actor, SimulationModule):
                 state.borrow_counter = 0
 
             edge_power = self._smallest_edge_group_power(state)
-            surplus = available - present
-            if edge_power is not None and surplus >= edge_power - 0.01:
+            demand = vehicle.max_require_power_kw
+            if edge_power is not None and (available - demand) >= edge_power - 0.01:
                 state.return_counter += 1
             else:
                 state.return_counter = 0
@@ -154,6 +169,10 @@ class MCUControl(Actor, SimulationModule):
                 if output.connected_vehicle is None:
                     state.borrow_counter = 0
                     state.return_counter = 0
+                    state.gun_live_ticks = 0
+                    continue
+
+                if self._advance_relay_phases(state):
                     continue
 
                 vehicle = output.connected_vehicle
@@ -174,8 +193,8 @@ class MCUControl(Actor, SimulationModule):
                     state.borrow_counter = 0
 
                 edge_power = self._smallest_edge_group_power(state)
-                surplus = available - present
-                if edge_power is not None and surplus >= edge_power - 0.01:
+                demand = vehicle.max_require_power_kw
+                if edge_power is not None and (available - demand) >= edge_power - 0.01:
                     state.return_counter += 1
                 else:
                     state.return_counter = 0
@@ -221,6 +240,8 @@ class MCUControl(Actor, SimulationModule):
         granted = await send_borrow_request(neighbor, self._mcu_id, target)
         if granted:
             self._apply_borrow(state, target)
+            if neighbor is not None:
+                neighbor._sync_foreign_relays(self._step_index)
 
     async def _try_return_async(self, state: OutputPowerState) -> None:
         target = self._find_shrink_target(state, prefer_cross_mcu=True)
@@ -236,6 +257,8 @@ class MCUControl(Actor, SimulationModule):
             await send_return_notify(neighbor, self._mcu_id, target)
 
         self._apply_return(state, target)
+        if not self._is_local_group(target) and neighbor is not None:
+            neighbor._sync_foreign_relays(self._step_index)
 
     def _apply_borrow(self, state: OutputPowerState, target: int) -> None:
         if state.interval_min is None or state.interval_max is None:
@@ -291,6 +314,59 @@ class MCUControl(Actor, SimulationModule):
 
     # ── Vehicle lifecycle ────────────────────────────────────────────
 
+    # ── Relay phase state machine (shared by sync + async paths) ─────
+
+    def _advance_relay_phases(self, state: OutputPowerState) -> bool:
+        """Progress arrival-close and departure-open phases.
+
+        Returns True if a phase is still pending (caller should skip
+        borrow/return logic this tick).
+        """
+        i = state.output_local_idx
+
+        # ── Arrival close (SPEC §11: inter-group first, then Output) ──
+        if state.pending_intergroup_close == 2:
+            self._apply_global_relay_state(include_output=False)
+            state.pending_intergroup_close = 0
+            state.pending_output_relay_close = 1
+        elif state.pending_intergroup_close == 1:
+            state.pending_intergroup_close = 2
+
+        if state.pending_output_relay_close == 2:
+            r = self._board.output_relays[i]
+            if r.state == RelayState.OPEN:
+                r.switch(self._step_index)
+            state.pending_output_relay_close = 0
+            self._sync_output(i)
+        elif state.pending_output_relay_close == 1:
+            state.pending_output_relay_close = 2
+
+        # ── Departure open (SPEC §11: inter-group first, then Output) ──
+        if state.pending_intergroup_open == 2:
+            self._open_departure_intergroup_relays(state)
+            state.pending_intergroup_open = 0
+            state.pending_output_relay_open = 1
+        elif state.pending_intergroup_open == 1:
+            state.pending_intergroup_open = 2
+
+        if state.pending_output_relay_open == 2:
+            state.pending_output_relay_open = 0
+            self._finalize_departure(state)
+            return True
+        elif state.pending_output_relay_open == 1:
+            state.pending_output_relay_open = 2
+
+        if (
+            state.pending_intergroup_close != 0
+            or state.pending_output_relay_close != 0
+            or state.pending_intergroup_open != 0
+            or state.pending_output_relay_open != 0
+        ):
+            state.borrow_counter = 0
+            state.return_counter = 0
+            return True
+        return False
+
     def handle_vehicle_arrival(self, output_local_idx: int) -> None:
         state = self._output_states[output_local_idx]
         if output_local_idx == 0:
@@ -315,12 +391,83 @@ class MCUControl(Actor, SimulationModule):
         for g in range(required_min, required_max + 1):
             if self._ma.get_owner(g) is None:
                 self._ma.assign(self._output_base + output_local_idx, g)
-        self._apply_global_relay_state()
+        # Three-phase arrival (SPEC §11):
+        #   Tick T   — arrival event only (all relays still OFF).
+        #   Tick T+1 — close inter-group / bridge relays to form anchor path.
+        #   Tick T+2 — close output power-switch relay (gate power to gun).
+        state.pending_intergroup_close = 1
+        state.gun_live_ticks = 0
         self._sync_output(output_local_idx)
 
-    def handle_vehicle_departure(self, output_local_idx: int) -> None:
+    def initiate_vehicle_departure(self, output_local_idx: int) -> None:
+        """Kick off phased departure (SPEC §11): open inter-group relays next
+        tick, open Output relay the tick after, then release assignments and
+        disconnect the vehicle. Idempotent if already departing."""
         state = self._output_states[output_local_idx]
+        if state.pending_intergroup_open != 0 or state.pending_output_relay_open != 0:
+            return
+        if state.interval_min is None:
+            return
+        state.borrow_counter = 0
+        state.return_counter = 0
+        state.pending_intergroup_open = 1
+
+    def _open_departure_intergroup_relays(self, state: OutputPowerState) -> None:
+        """Open inter-group / bridge relays uniquely needed by the departing
+        output's interval. Preserve relays still needed by the other local
+        output (or by foreign outputs borrowing our territory)."""
+        if state.interval_min is None or state.interval_max is None:
+            return
+        departing = set(self._compute_required_relays(
+            state.output_local_idx, state.interval_min, state.interval_max,
+            include_output=False,
+        ))
+
+        still_needed: set[Relay] = set()
+        for s in self._output_states:
+            if s is state or s.interval_min is None:
+                continue
+            still_needed.update(self._compute_required_relays(
+                s.output_local_idx, s.interval_min, s.interval_max,
+                include_output=False,
+            ))
+
+        for g in range(self._group_base, self._group_base + 4):
+            owner = self._ma.get_owner(g)
+            if owner is None:
+                continue
+            local_out = owner - self._output_base
+            if 0 <= local_out < 2:
+                continue
+            groups = self._ma.get_groups_for_output(owner)
+            if not groups:
+                continue
+            gmin, gmax = min(groups), max(groups)
+            local_lo = max(gmin, self._group_base)
+            local_hi = min(gmax, self._group_base + 3)
+            for gg in range(local_lo, local_hi):
+                li = gg - self._group_base
+                if 0 <= li < 3:
+                    still_needed.add(self._board.inter_group_relays[li])
+            if (
+                self._board.right_bridge_relay is not None
+                and gmin <= self._group_base + 3
+                and gmax >= self._group_base + 4
+            ):
+                still_needed.add(self._board.right_bridge_relay)
+
+        for r in departing - still_needed:
+            if r.state == RelayState.CLOSED:
+                r.switch(self._step_index)
+
+    def _finalize_departure(self, state: OutputPowerState) -> None:
+        """Open the Output relay, release groups, disconnect the vehicle."""
+        output_local_idx = state.output_local_idx
         output_idx = self._output_base + output_local_idx
+
+        r = self._board.output_relays[output_local_idx]
+        if r.state == RelayState.CLOSED:
+            r.switch(self._step_index)
 
         if state.interval_min is not None:
             for g in range(state.interval_min, state.interval_max + 1):
@@ -331,8 +478,9 @@ class MCUControl(Actor, SimulationModule):
         state.interval_max = None
         state.borrow_counter = 0
         state.return_counter = 0
+        state.gun_live_ticks = 0
 
-        self._apply_global_relay_state()
+        self._board.outputs[output_local_idx].disconnect_vehicle()
         self._sync_output(output_local_idx)
 
     # ── Force return ─────────────────────────────────────────────────
@@ -426,14 +574,46 @@ class MCUControl(Actor, SimulationModule):
 
     # ── Relay state management ───────────────────────────────────────
 
-    def _apply_global_relay_state(self) -> None:
+    def _sync_foreign_relays(self, step_index: int) -> None:
+        """Resync my inter-group/bridge relays after a neighbor's borrow/return
+        changed ModuleAssignment in my territory (SPEC §6.3)."""
+        self._step_index = step_index
+        self._apply_global_relay_state(include_output=False)
+
+    def _apply_global_relay_state(self, include_output: bool = True) -> None:
         """Toggle relays owned by this MCU to match union of output requirements."""
         needed: set[Relay] = set()
         for state in self._output_states:
             if state.interval_min is not None:
                 needed.update(self._compute_required_relays(
-                    state.output_local_idx, state.interval_min, state.interval_max
+                    state.output_local_idx, state.interval_min, state.interval_max,
+                    include_output=include_output,
                 ))
+        # Cross-MCU borrows: include relays owned by this MCU that are needed
+        # by foreign outputs whose intervals extend into our territory.
+        for g in range(self._group_base, self._group_base + 4):
+            owner = self._ma.get_owner(g)
+            if owner is None:
+                continue
+            local_out = owner - self._output_base
+            if 0 <= local_out < 2:
+                continue  # already handled via local interval
+            groups = self._ma.get_groups_for_output(owner)
+            if not groups:
+                continue
+            gmin, gmax = min(groups), max(groups)
+            local_lo = max(gmin, self._group_base)
+            local_hi = min(gmax, self._group_base + 3)
+            for gg in range(local_lo, local_hi):
+                li = gg - self._group_base
+                if 0 <= li < 3:
+                    needed.add(self._board.inter_group_relays[li])
+            if (
+                self._board.right_bridge_relay is not None
+                and gmin <= self._group_base + 3
+                and gmax >= self._group_base + 4
+            ):
+                needed.add(self._board.right_bridge_relay)
 
         all_relays = list(self._board.output_relays) + list(self._board.inter_group_relays)
         if self._board.right_bridge_relay is not None:
@@ -442,15 +622,28 @@ class MCUControl(Actor, SimulationModule):
         for r in all_relays:
             if r.state == RelayState.CLOSED and r not in needed:
                 r.switch(self._step_index)
+        # Close inter-group / bridge relays first so the 125 kW path is
+        # formed before the Output relay closes (SPEC §11, §17).
+        output_relay_set = set(self._board.output_relays)
         for r in needed:
+            if r in output_relay_set:
+                continue
+            if r.state == RelayState.OPEN:
+                r.switch(self._step_index)
+        for r in needed:
+            if r not in output_relay_set:
+                continue
             if r.state == RelayState.OPEN:
                 r.switch(self._step_index)
 
     def _compute_required_relays(
-        self, output_local_idx: int, new_min: int, new_max: int
+        self, output_local_idx: int, new_min: int, new_max: int,
+        include_output: bool = True,
     ) -> list[Relay]:
         """Relays owned by THIS MCU that must be CLOSED for this interval."""
-        relays: list[Relay] = [self._board.output_relays[output_local_idx]]
+        relays: list[Relay] = []
+        if include_output:
+            relays.append(self._board.output_relays[output_local_idx])
 
         # Local inter-group relays (within this MCU's 4 groups)
         local_lo = max(new_min, self._group_base)

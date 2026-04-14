@@ -120,16 +120,18 @@ class RectifierBoard(SimulationModule):
         ]
 
     def initialize_relays(self, dt_index: int = 0) -> None:
-        """Close relays for the fixed Phase 1 power allocation."""
-        # O0 path: close R_O0 and R_01
-        for r in [self.output_relays[0], self.inter_group_relays[0]]:
-            if r.state == RelayState.OPEN:
-                r.switch(dt_index)
-        # O1 path: close R_O1 and R_23
-        for r in [self.output_relays[1], self.inter_group_relays[2]]:
+        """Pre-close only inter-group relays on the anchor paths.
+
+        Output relays stay OPEN; they close only after the 125 kW interval
+        is formed when a vehicle arrives (SPEC §11 minimum-guaranteed-power).
+        """
+        # O0 anchor path: close R_01
+        # O1 anchor path: close R_23
+        for r in [self.inter_group_relays[0], self.inter_group_relays[2]]:
             if r.state == RelayState.OPEN:
                 r.switch(dt_index)
         # R_12 stays OPEN (boundary between O0 and O1 territories)
+        # Output relays stay OPEN until handle_vehicle_arrival() triggers them
 
     def step(self, dt: float) -> None:
         for relay in self.relays:

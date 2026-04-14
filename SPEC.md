@@ -442,10 +442,12 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 | 約束 | 說明 |
 |---|---|
 | 最小保證功率 | 每個 Output 啟動充電最低 125kW |
+| Output 的 Relay 切換時機 | 在準備好 125kW 之後才能閉合 Relay
 | 連續區間約束 | 所有分配給同一 Output 的 Group 必須形成不間斷的連續區間 |
 | Ring Topology 約束 | 只有物理相鄰的 MCU 才能進行功率借還 |
 | 借電優先級 | 右 > 左 > 雙側 |
 | Relay 切換為原子操作 | 無 `COMMAND_ISSUED` 或 `FAILED` 中間狀態，只有 `SWITCHED` |
+| EV 到達充電需求 (EV 開離充電站) | EV 到達需求之後; 先開啟 (Open)所有 SMR Group 間的 Relays ，然後才開啟充電槍 (Output)的 Relay
 
 ---
 
@@ -615,6 +617,8 @@ asyncio.run(main())
 
 ## 16. 來車情境
 
+以4個 MCU 為驗證設定，設計出可執行下列 14 種情境
+
 | 編號 | 組合類型(n) | 0個ONMCU數 | 1個ONMCU數 | 2個ONMCU數 | 總開啟Output數 | 組合範例說明 |
 |------|------------|-----------|-----------|-----------|--------------|------------|
 | 1 | (3, 1, 0) | 3 | 1 | 0 | 1 | MCU1(O1:ON, O2:OFF) ; MCU2(O1:OFF, O2:OFF) ; MCU3(O1:OFF, O2:OFF) ; MCU4(O1:OFF, O2:OFF) |
@@ -631,6 +635,45 @@ asyncio.run(main())
 | 12 | (1, 0, 3) | 1 | 0 | 3 | 6 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:OFF, O2:OFF) |
 | 13 | (0, 1, 3) | 0 | 1 | 3 | 7 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:ON, O2:OFF) |
 | 14 | (0, 0, 4) | 0 | 0 | 4 | 8 | MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON, O2:ON) ; MCU4(O1:ON, O2:ON) |
+
+
+## 17. 資料驗證的格式
+
+1. 出輸驗證的格式為 .csv 
+2. 出輸的範例內容：(下面是以 2 個 MCU 為例，需要依當時的 MCU 數量決定)
+Scenario_10: MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON) ; MCU4(OFF)
+3. 以英文輸出
+| Step | 時間 | 事件 | Outputs 步驟操作 | Relays 步驟操作 | M1.O1 | M1.O2 | M1.R1 | M1.R2 | M1.R3 | M1.R4 | M1.EV1 Available Power | M1.EV1 Max Requier Power | M1.EV2 Available Power | M1.EV2 Max Requier Power | M2.O1 | M2.O2 | M2.R1 | M2.R2 | M2.R3 | M2.R4 | M2.EV1 Available Power | M2.EV1 Max Requier Power | M2.EV2 Available Power | M2.EV2 Max Requier Power |
+|------|------|------|-----------------|----------------|-------|-------|-------|-------|-------|-------|----------------------|------------------------|----------------------|------------------------|-------|-------|-------|-------|-------|-------|----------------------|------------------------|----------------------|------------------------|
+| 初始 | — | 系統待機 | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 1 | T0: 00:00 | EV1 到達 MCU1.O1 | — | M1.R1 閉合 | OFF | OFF | ON | OFF | OFF | OFF | — | — | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 2 | T1: 00:01 | M1.O1 閉合 | M1.O1 閉合 | — | ON | OFF | ON | OFF | OFF | OFF | 125kW | 318kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 3 | T2: 00:04 | EV1 提升至 200kW | — | M1.R2 閉合 | ON | OFF | ON | ON | OFF | OFF | 200kW | 318kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 4 | T3: 00:07 | EV1 提升至 250kW | — | M1.R3 閉合 | ON | OFF | ON | ON | ON | OFF | 250kW | 318kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 5 | T4: 00:10 | EV1 向MCU2借電至 300kW | — | M1.R4 閉合 | ON | OFF | ON | ON | ON | ON | 300kW | 318kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 6 | T5: 02:04 | EV1 SOC 19% 曲線功率 297kW | — | — | ON | OFF | ON | ON | ON | ON | 300kW | 297kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 7 | T6: 04:11 | EV1 SOC 27% 還電至 250kW | — | M1.R4 斷開 | ON | OFF | ON | ON | ON | OFF | 250kW | 248kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 8 | T7: 05:00 | EV2 到達 MCU1.O2，資源重新平衡 | — | M1.R3 斷開 | ON | OFF | ON | ON | OFF | OFF | 200kW | 248kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 9 | T8: 05:01 | M1.R2 斷開 | — | M1.R2 斷開 | ON | OFF | ON | OFF | OFF | OFF | 125kW | 248kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 10 | T9: 05:02 | M1.R3 閉合 | — | M1.R3 閉合 | ON | OFF | ON | OFF | ON | OFF | 125kW | 248kW | — | — | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 11 | T10: 05:03 | M1.O2 閉合 | M1.O2 閉合 | — | ON | ON | ON | OFF | ON | OFF | 125kW | 248kW | 125kW | 318kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 12 | T11: 05:03 | EV1 向MCU4借電至 175kW | — | M4.R4 閉合 | ON | ON | ON | OFF | ON | OFF | 175kW | 248kW | 125kW | 318kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 13 | T12: 05:06 | EV1 向MCU4借電至 250kW | — | M4.R3 閉合 | ON | ON | ON | OFF | ON | OFF | 250kW | 248kW | 125kW | 318kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 14 | T13: 05:08 | EV2 向MCU2借電至 175kW | — | M1.R4 閉合 | ON | ON | ON | OFF | ON | ON | 250kW | 248kW | 175kW | 318kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 15 | T14: 05:11 | EV2 向MCU2借電至 250kW | — | M2.R1 閉合 | ON | ON | ON | OFF | ON | ON | 250kW | 248kW | 250kW | 318kW | OFF | OFF | ON | OFF | OFF | OFF | — | — | — | — |
+| 16 | T15: 05:14 | EV2 向MCU2借電至 325kW | — | M2.R2 閉合 | ON | ON | ON | OFF | ON | ON | 250kW | 248kW | 325kW | 318kW | OFF | OFF | ON | ON | OFF | OFF | — | — | — | — |
+| 17 | T16: 08:47 | EV1 SOC 41% 還電至 175kW | — | M4.R3 斷開 | ON | ON | ON | OFF | ON | ON | 175kW | 174kW | 325kW | 297kW | OFF | OFF | ON | ON | OFF | OFF | — | — | — | — |
+| 18 | T17: 09:11 | EV2 SOC 27% 還電至 250kW | — | M2.R2 斷開 | ON | ON | ON | OFF | ON | ON | 175kW | 174kW | 250kW | 248kW | OFF | OFF | ON | OFF | OFF | OFF | — | — | — | — |
+| 19 | T18: 10:00 | EV3 到達 MCU2.O1 | — | M2.R1 斷開 | ON | ON | ON | OFF | ON | ON | 175kW | 174kW | 175kW | 248kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 20 | T19: 10:01 | M1.R4 斷開 | — | M1.R4 斷開 | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | OFF | OFF | OFF | OFF | OFF | OFF | — | — | — | — |
+| 21 | T20: 10:02 | M2.R1 閉合 | — | M2.R1 閉合 | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | OFF | OFF | ON | OFF | OFF | OFF | — | — | — | — |
+| 22 | T21: 10:03 | M2.O1 閉合 | M2.O1 閉合 | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | ON | OFF | ON | OFF | OFF | OFF | 125kW | 318kW | — | — |
+| 23 | T22: 10:04 | EV3 提升至 200kW | — | M2.R2 閉合 | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | ON | OFF | ON | ON | OFF | OFF | 200kW | 318kW | — | — |
+| 24 | T23: 10:07 | EV3 提升至 250kW | — | M2.R3 閉合 | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | ON | OFF | ON | ON | ON | OFF | 250kW | 318kW | — | — |
+| 25 | T24: 10:10 | EV3 向MCU3借電至 300kW | — | M2.R4 閉合 | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 248kW | ON | OFF | ON | ON | ON | ON | 300kW | 318kW | — | — |
+| 26 | T25: 11:39 | EV2 SOC 35% 曲線功率 198kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 198kW | ON | OFF | ON | ON | ON | ON | 300kW | 318kW | — | — |
+| 27 | T26: 12:04 | EV3 SOC 19% 曲線功率 297kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 198kW | ON | OFF | ON | ON | ON | ON | 300kW | 297kW | — | — |
+| 28 | T27: 13:47 | EV2 SOC 41% 曲線功率 174kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 174kW | ON | OFF | ON | ON | ON | ON | 300kW | 297kW | — | — |
 
 ## 附錄 A：參考連結
 

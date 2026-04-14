@@ -22,6 +22,8 @@ The devcontainer is Node.js 20 + Python. `ANTHROPIC_API_KEY` is required as a de
 
 > No build/test/lint commands are configured yet — this project is in the implementation phase. Add commands here as they are established.
 
+Reference EV profile for development/validation: **2024 Tesla Cybertruck Cyberbeast** (325 kW peak). Charging curve data: `associate/ev_curve_data.csv` (SPEC §15).
+
 ## Planned Directory Structure
 
 ```
@@ -33,6 +35,8 @@ simulation/
 ├── communication/     # BorrowProtocol, ReturnProtocol
 ├── log/               # RelayEvent, RelayEventLog
 └── utils/             # Validator, ConfigLoader
+
+associate/             # Reference data (e.g. ev_curve_data.csv — Tesla Cybertruck curve)
 ```
 
 ## Architecture
@@ -42,7 +46,7 @@ simulation/
 **Layer 1 — Simulation Environment** (no business logic):
 - `SimulationEngine`: Main loop driver. Advances time by `dt` each step and calls `step(dt)` on all modules.
 - `TimeController`: Heartbeat generator. Time advancement is the *only* driver — no external events bypass it.
-- `VisionOutput`: Collects `get_status()` snapshots, runs consistency validation, then emits Timing Diagrams. Blocks output if validation fails.
+- `VisionOutput`: Collects `get_status()` snapshots, runs the boundary-consistency check defined in SPEC §9 (compares `allocated_power` and `relay_state` across adjacent MCUs), then emits Timing Diagrams. Blocks output if validation fails. Log schema: JSON with a `conflicts[]` array; each entry is `{group, output, field, values: [mcu_a_val, mcu_b_val]}`.
 
 **Layer 2 — Simulation Modules** (all equal, no hierarchy):
 All modules receive `step(dt)` and return `get_status()`. No central coordinator.
@@ -50,7 +54,8 @@ All modules receive `step(dt)` and return `get_status()`. No central coordinator
 | Module | Role |
 |---|---|
 | `Vehicle` | Holds SOC curve, updates SOC each dt, negotiates Present Power with MCU |
-| `TrafficSimulator` | Generates Vehicle instances at configurable arrival rates and routes them to Outputs |
+| `TrafficSimulator` | Decides *whether* to spawn a vehicle each step (arrival rate) and routes it to an Output |
+| `VehicleGenerator` | Instantiates `Vehicle` objects from `vehicle_profiles`; called by `TrafficSimulator` |
 | `MCUControl` | Business logic core — borrow/return power decisions, relay switching commands |
 | `ChargingStation` | Global container (shell only, no logic) |
 | `RectifierBoard` | Hardware abstraction for SMR groups + relays + outputs (state, no behavior) |
@@ -70,6 +75,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 ```
 
 - Each MCU: 4 SMR Groups (50/75/75/50 kW), 2 Outputs, Bridge Relays at MCU boundaries
+- **Bridge Relays** (cross-MCU boundary): `R1`, `R5`, `R9` (SPEC §2.2)
 - MCU2 = Local view; MCU1 and MCU3 = neighbors
 - Discrete power levels per MCU: 50 / 125 / 200 / 250 kW
 - Minimum guaranteed power to start charging: 125 kW
@@ -78,19 +84,31 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 **Relay Matrix** (18×18 symmetric, 3-MCU): Defines physically legal connections.
 - `0` = relay open, `1` = relay closed, `-1` = no physical wire (forever illegal)
+- Node indices: Groups occupy `0–11`, Outputs occupy `12–17`.
+- Per-MCU view: `LOCAL = 1`, neighbors `= 0, 2` (SPEC §5.1).
 
 **Module Assignment** (Outputs × Groups): Tracks which Output owns which Groups.
 - `0` = idle, `1` = in use, `-1` = cannot be assigned to this Output
 - All Groups assigned to one Output must form a **contiguous interval** — no gaps.
+- Index conversion: `mcu_idx = Gx // 4`, `pos_in_mcu = Gx % 4` (SPEC §5.2, §7.1).
+
+**Anchor Point (錨點)**: the fixed Group each Output is wired to via the Relay Matrix. It is the starting point for all borrow/return logic and is always touched **last** on return.
 
 ### Key Business Logic Rules
 
-- **Borrow trigger**: `Present Power == Available Power` for N consecutive steps → expand [MIN, MAX] interval by one Group
-- **Return trigger**: `Available Power - Present Power >= 1 Group` for N steps → shrink interval from outside in
-- **Borrow priority**: right neighbor > left neighbor > both sides
-- **Return order**: always return cross-MCU Groups first, local Groups last; anchor Group is touched last
-- **Conflict on new vehicle arrival**: detect via Module Assignment scan; notify borrowing Output to release conflicting Groups
-- **Ring addressing**: `prev = (self_idx - 1 + N) % N`, `next = (self_idx + 1 + N) % N`
+- **Borrow trigger**: `Present Power == Available Power` for N consecutive steps.
+- **Borrow steps (SPEC §6.1)**: 1) find anchor via Relay Matrix → 2) determine initial `[MIN, MAX]` around anchor → 3) expand **local-first** — never cross an MCU boundary while local Groups remain → 4) when local is exhausted, cross using the SPEC §2.2 priority: **right neighbor > left neighbor > both sides**.
+- **Return trigger**: `Available Power - Present Power >= 1 Group` for N consecutive steps.
+- **Return steps (SPEC §6.2)** — 4-case decision:
+  1. Both MIN and MAX external → shrink from MIN (MIN→right).
+  2. Only MIN external → shrink from MIN.
+  3. Only MAX external → shrink from MAX (MAX→left).
+  4. Both local → if MIN is the anchor shrink from MAX, else from MIN.
+  Anchor Group is always touched last.
+- **Conflict protocol (SPEC §6.3)** — two sides:
+  - *Initiator* (new vehicle arrives): find anchor → determine initial interval → scan Module Assignment for occupied Groups → notify the holder to release.
+  - *Responder* (receives release notice for `Gx`): find own anchor → if `anchor < Gx` return from MAX end, if `anchor > Gx` return from MIN end → switch relays.
+- **Ring addressing**: `prev = (self_idx - 1 + N) % N`, `next = (self_idx + 1 + N) % N`. The `+N` form is defensive for C-portability (avoids negative-modulo behavior); each MCU only needs its own index.
 
 ### Critical Constraints
 
@@ -99,6 +117,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 | Atomic relay events | Only `SWITCHED` state — no `COMMAND_ISSUED` or `FAILED` intermediates |
 | Contiguous interval | All Groups for one Output must form an unbroken [MIN, MAX] range |
 | Local-first | Use local MCU resources before borrowing from neighbors |
+| EV arrival/departure relay sequence | Inter-Group / bridge relays always switch before the Output relay. On arrival: close inter-Group first, then Output. On departure (SPEC §11): open inter-Group first, then Output |
 
 ## Recommended Implementation Order
 
@@ -108,8 +127,12 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 4. **Phase 4**: Multi-MCU + Borrow/Return protocols
 5. **Phase 5**: `Validator` + Visualization (Timing Diagrams)
 
+## Validation
+
+Acceptance target is the **14-scenario test matrix** in SPEC §16 (combinations of active Outputs across MCUs). Notation `(a,b,c)` = count of MCUs with 0 / 1 / 2 active Outputs respectively across the 4-MCU matrix.
+
+Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step | Time | Event | [per EV: Output ops, Relay ops] | [per MCU: O1, O2, R1–R4, AvailablePower, MaxRequiredPower]`.
+
 ## Recommended Architecture
 
-Use **asyncio + Queue (Actor Model)** — each entity (EV, Output, MCU) has its own `asyncio.Queue` and processes messages independently. See SPEC.md §14 for skeleton code.
-
-Use **TinyDB (in-memory)** with JSON to store simulation state snapshots.
+Recommended (optional, per SPEC §14): **asyncio + Queue (Actor Model)** — each entity (EV, Output, MCU) has its own `asyncio.Queue` and processes messages independently. Use **TinyDB (in-memory)** with JSON to store simulation state snapshots. Keep this stack in mind from Phase 1 onward.
