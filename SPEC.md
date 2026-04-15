@@ -703,11 +703,11 @@ Select [A/B]: _
 Select [A/B]: _
 
   (If A)
-  [Q3-1] Enter fixed initial SOC (20~79): _
+  [Q3-1] Enter fixed initial SOC (10~89): _
 
   (If B)
-  [Q3-1] Enter initial SOC lower bound (20~79): _
-  [Q3-2] Enter initial SOC upper bound ({lower+1}~80): _
+  [Q3-1] Enter initial SOC lower bound (10~89): _
+  [Q3-2] Enter initial SOC upper bound ({lower+1}~90): _
 
 [Q4] Vehicle target SOC
   A) Fixed
@@ -715,11 +715,11 @@ Select [A/B]: _
 Select [A/B]: _
 
   (If A)
-  [Q4-1] Enter fixed target SOC ({max initial SOC + 1}~80): _
+  [Q4-1] Enter fixed target SOC ({max initial SOC + 1}~90): _
 
   (If B)
-  [Q4-1] Enter target SOC lower bound ({max initial SOC + 1}~79): _
-  [Q4-2] Enter target SOC upper bound ({lower+1}~80): _
+  [Q4-1] Enter target SOC lower bound ({max initial SOC + 1}~89): _
+  [Q4-2] Enter target SOC upper bound ({lower+1}~90): _
 
 === Parameter Summary ===
 Arrival order : Sequential / Random

@@ -76,16 +76,16 @@ def prompt_params() -> SimParams:
     q3 = _ask_choice("Select [A/B]: ", ("A", "B"))
     if q3 == "A":
         soc_init_mode = "fixed"
-        v = _ask_int("  [Q3-1] Enter fixed initial SOC (20~79): ", 20, 79)
+        v = _ask_int("  [Q3-1] Enter fixed initial SOC (10~89): ", 10, 89)
         soc_init_lo = soc_init_hi = v
     else:
         soc_init_mode = "rand"
         soc_init_lo = _ask_int(
-            "  [Q3-1] Enter initial SOC lower bound (20~79): ", 20, 79
+            "  [Q3-1] Enter initial SOC lower bound (10~89): ", 10, 89
         )
         soc_init_hi = _ask_int(
-            f"  [Q3-2] Enter initial SOC upper bound ({soc_init_lo+1}~80): ",
-            soc_init_lo + 1, 80,
+            f"  [Q3-2] Enter initial SOC upper bound ({soc_init_lo+1}~90): ",
+            soc_init_lo + 1, 90,
         )
 
     max_initial = soc_init_hi
@@ -98,19 +98,19 @@ def prompt_params() -> SimParams:
     if q4 == "A":
         soc_tgt_mode = "fixed"
         v = _ask_int(
-            f"  [Q4-1] Enter fixed target SOC ({max_initial+1}~80): ",
-            max_initial + 1, 80,
+            f"  [Q4-1] Enter fixed target SOC ({max_initial+1}~90): ",
+            max_initial + 1, 90,
         )
         soc_tgt_lo = soc_tgt_hi = v
     else:
         soc_tgt_mode = "rand"
         soc_tgt_lo = _ask_int(
-            f"  [Q4-1] Enter target SOC lower bound ({max_initial+1}~79): ",
-            max_initial + 1, 79,
+            f"  [Q4-1] Enter target SOC lower bound ({max_initial+1}~89): ",
+            max_initial + 1, 89,
         )
         soc_tgt_hi = _ask_int(
-            f"  [Q4-2] Enter target SOC upper bound ({soc_tgt_lo+1}~80): ",
-            soc_tgt_lo + 1, 80,
+            f"  [Q4-2] Enter target SOC upper bound ({soc_tgt_lo+1}~90): ",
+            soc_tgt_lo + 1, 90,
         )
 
     return SimParams(
