@@ -117,7 +117,10 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 | Atomic relay events | Only `SWITCHED` state — no `COMMAND_ISSUED` or `FAILED` intermediates |
 | Contiguous interval | All Groups for one Output must form an unbroken [MIN, MAX] range |
 | Local-first | Use local MCU resources before borrowing from neighbors |
-| EV arrival/departure relay sequence | Inter-Group / bridge relays always switch before the Output relay. On arrival: close inter-Group first, then Output. On departure (SPEC §11): open inter-Group first, then Output |
+| Output relay close timing | Output relay may close only after ≥125kW is prepared for the EV (SPEC §11) |
+| Output relay open guard | Output relay must stay Closed while the EV has not yet met its charging requirement — it cannot be opened mid-charge (SPEC §11) |
+| EV arrival relay sequence | On arrival/borrow: close inter-Group / bridge relays first, then close Output |
+| EV departure relay sequence | On departure (after EV meets requirement): open inter-Group / bridge relays first, then open Output (SPEC §11) |
 
 ## Recommended Implementation Order
 

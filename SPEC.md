@@ -448,6 +448,7 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 | 借電優先級 | 右 > 左 > 雙側 |
 | Relay 切換為原子操作 | 無 `COMMAND_ISSUED` 或 `FAILED` 中間狀態，只有 `SWITCHED` |
 | EV 到達充電需求 (EV 開離充電站) | EV 到達需求之後; 先開啟 (Open)所有 SMR Group 間的 Relays ，然後才開啟充電槍 (Output)的 Relay
+| EV 充電中不能開啟 Output 的 Relay |　EV 在未達充電需求之前，Output 的 Relay 是不允許開啟 (Open)，必需保持閉合 (Closed)
 
 ---
 
@@ -674,6 +675,59 @@ Scenario_10: MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON) ; MCU4(OFF)
 | 26 | T25: 11:39 | EV2 SOC 35% 曲線功率 198kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 198kW | ON | OFF | ON | ON | ON | ON | 300kW | 318kW | — | — |
 | 27 | T26: 12:04 | EV3 SOC 19% 曲線功率 297kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 198kW | ON | OFF | ON | ON | ON | ON | 300kW | 297kW | — | — |
 | 28 | T27: 13:47 | EV2 SOC 41% 曲線功率 174kW | — | — | ON | ON | ON | OFF | ON | OFF | 175kW | 174kW | 125kW | 174kW | ON | OFF | ON | ON | ON | ON | 300kW | 297kW | — | — |
+
+## 18. EVCS 模擬參數設定
+
+=== EVCS Simulation Parameter Setup ===
+
+[Q1] Vehicle arrival order at charging guns
+  A) Sequential
+  B) Random
+Select [A/B]: _
+
+[Q2] Vehicle arrival interval
+  A) Fixed
+  B) Random
+Select [A/B]: _
+
+  (If A)
+  [Q2-1] Enter fixed interval (1~15 minutes): _
+
+  (If B)
+  [Q2-1] Enter minimum interval (1~14 minutes): _
+  [Q2-2] Enter maximum interval ({min+1}~15 minutes): _
+
+[Q3] Vehicle initial SOC
+  A) Fixed
+  B) Random
+Select [A/B]: _
+
+  (If A)
+  [Q3-1] Enter fixed initial SOC (20~79): _
+
+  (If B)
+  [Q3-1] Enter initial SOC lower bound (20~79): _
+  [Q3-2] Enter initial SOC upper bound ({lower+1}~80): _
+
+[Q4] Vehicle target SOC
+  A) Fixed
+  B) Random
+Select [A/B]: _
+
+  (If A)
+  [Q4-1] Enter fixed target SOC ({max initial SOC + 1}~80): _
+
+  (If B)
+  [Q4-1] Enter target SOC lower bound ({max initial SOC + 1}~79): _
+  [Q4-2] Enter target SOC upper bound ({lower+1}~80): _
+
+=== Parameter Summary ===
+Arrival order : Sequential / Random
+Arrival interval: Fixed 5 min / Random 3~8 min
+Initial SOC    : Fixed 30 / Random 20~50
+Target SOC     : Fixed 80 / Random 60~80
+
+Confirm and run? [Y/N]: _
 
 ## 附錄 A：參考連結
 

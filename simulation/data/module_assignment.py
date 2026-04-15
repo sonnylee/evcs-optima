@@ -41,7 +41,24 @@ class ModuleAssignment:
 
     def assign(self, output_idx: int, group_idx: int) -> None:
         assert self._matrix[output_idx][group_idx] != -1, "Cannot assign"
+        for o in range(self.num_outputs):
+            if o != output_idx and self._matrix[o][group_idx] == 1:
+                raise AssertionError(
+                    f"Group {group_idx} already owned by Output {o}; "
+                    f"cannot assign to Output {output_idx}"
+                )
         self._matrix[output_idx][group_idx] = 1
+
+    def assign_if_idle(self, output_idx: int, group_idx: int) -> bool:
+        """Atomically claim `group_idx` for `output_idx` iff no other Output
+        currently owns it. Returns True on successful claim."""
+        if self._matrix[output_idx][group_idx] == -1:
+            return False
+        for o in range(self.num_outputs):
+            if self._matrix[o][group_idx] == 1 and o != output_idx:
+                return False
+        self._matrix[output_idx][group_idx] = 1
+        return True
 
     def release(self, output_idx: int, group_idx: int) -> None:
         assert self._matrix[output_idx][group_idx] != -1, "Cannot release"

@@ -20,9 +20,15 @@ class Stop:
 
 @dataclass
 class BorrowRequest:
-    """MCU-A → neighbor: may I borrow `group_idx`? Reply via `response`."""
+    """MCU-A → neighbor: may I borrow `group_idx`? Reply via `response`.
+
+    `requester_output_idx` is the global Output index that will own the group
+    on grant, so the responder can atomically reserve it on the requester's
+    behalf — closing the check→assign race across actors.
+    """
     from_mcu: int
     group_idx: int
+    requester_output_idx: int
     response: asyncio.Future  # -> bool (granted)
 
 

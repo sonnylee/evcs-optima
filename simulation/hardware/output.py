@@ -38,8 +38,12 @@ class Output(SimulationModule):
         for g in self.groups:
             g.owner_output_id = self.output_id
         if self._module_assignment is not None:
+            # Best-effort claim of the anchor groups; MCUControl.handle_vehicle_arrival
+            # will perform any force-return + authoritative assignment immediately
+            # after this call. Skip cells already owned by another Output to avoid
+            # transient single-ownership violations during the connect handshake.
             for gi in self._group_indices:
-                self._module_assignment.assign(self._output_idx, gi)
+                self._module_assignment.assign_if_idle(self._output_idx, gi)
 
     def disconnect_vehicle(self) -> None:
         if self._module_assignment is not None:

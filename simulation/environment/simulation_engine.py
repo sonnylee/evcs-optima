@@ -103,6 +103,10 @@ class SimulationEngine:
         if self.traffic_simulator is not None:
             self.traffic_simulator.mcu_controls = self.mcu_controls
 
+        # Drop construction-time relay switches (station.initialize + initial
+        # handle_vehicle_arrival) so the trace starts from a clean ledger.
+        self.event_log.clear()
+
     # ── Public entry point ───────────────────────────────────────────
 
     def run(self) -> None:
@@ -167,7 +171,7 @@ class SimulationEngine:
             # Broadcast Tick; collect per-MCU done events
             done_events = [asyncio.Event() for _ in self.mcu_controls]
             for mcu, ev in zip(self.mcu_controls, done_events):
-                await mcu.send(Tick(dt=dt, step_index=tc.step_index + 1, done=ev))
+                await mcu.send(Tick(dt=dt, step_index=tc.step_index, done=ev))
             await asyncio.gather(*(e.wait() for e in done_events))
 
             # Drain any lingering protocol replies: wait until all queues empty
@@ -240,9 +244,17 @@ class SimulationEngine:
         station_status = self.station.get_status()
 
         # Feed VisionOutput: per-step snapshot for CSV trace (SPEC §17)
+        from simulation.hardware.relay import RelayState
         vehicles_by_output: dict[str, dict | None] = {}
-        for o in self._all_outputs:
-            if o.connected_vehicle is not None:
+        for i, o in enumerate(self._all_outputs):
+            mcu_idx, local_idx = i // 2, i % 2
+            out_relay = self.station.boards[mcu_idx].output_relays[local_idx]
+            # SPEC §11: Available/Max-Required Power are only meaningful once
+            # the Output relay is actually CLOSED (power gated to the gun).
+            if (
+                o.connected_vehicle is not None
+                and out_relay.state == RelayState.CLOSED
+            ):
                 vehicles_by_output[o.output_id] = {
                     "vehicle_id": o.connected_vehicle.vehicle_id,
                     "available_power_kw": o.available_power_kw,

@@ -19,6 +19,11 @@ from simulation.communication.return_protocol import (
 )
 from simulation.environment.actor import Actor
 from simulation.hardware.relay import RelayState
+from simulation.modules.vehicle import VehicleState
+
+# SPEC §11: minimum power that must be prepared before the Output relay
+# may close (gate power to the charging gun).
+MIN_START_POWER_KW = 125.0
 
 if TYPE_CHECKING:
     from simulation.data.module_assignment import ModuleAssignment
@@ -116,8 +121,8 @@ class MCUControl(Actor, SimulationModule):
 
     def step(self, dt: float) -> None:
         """Synchronous local-only step (used by legacy single-MCU paths)."""
-        self._step_index += 1
         self._run_local_logic()
+        self._step_index += 1
 
     def _run_local_logic(self) -> None:
         for i, output in enumerate(self._board.outputs):
@@ -237,9 +242,14 @@ class MCUControl(Actor, SimulationModule):
         else:
             neighbor = self.left_neighbor
 
-        granted = await send_borrow_request(neighbor, self._mcu_id, target)
+        output_idx = self._output_base + state.output_local_idx
+        granted = await send_borrow_request(
+            neighbor, self._mcu_id, target, output_idx,
+        )
         if granted:
-            self._apply_borrow(state, target)
+            # Responder already reserved `target` for us in ModuleAssignment;
+            # only update interval + relays here.
+            self._apply_borrow(state, target, already_assigned=True)
             if neighbor is not None:
                 neighbor._sync_foreign_relays(self._step_index)
 
@@ -260,16 +270,22 @@ class MCUControl(Actor, SimulationModule):
         if not self._is_local_group(target) and neighbor is not None:
             neighbor._sync_foreign_relays(self._step_index)
 
-    def _apply_borrow(self, state: OutputPowerState, target: int) -> None:
+    def _apply_borrow(
+        self, state: OutputPowerState, target: int,
+        already_assigned: bool = False,
+    ) -> None:
         if state.interval_min is None or state.interval_max is None:
             return
+        output_idx = self._output_base + state.output_local_idx
+        if not already_assigned:
+            if not self._ma.assign_if_idle(output_idx, target):
+                # Someone else claimed it between target selection and apply.
+                return
         if target < state.interval_min:
             state.interval_min = target
         else:
             state.interval_max = target
         self._apply_global_relay_state()
-        output_idx = self._output_base + state.output_local_idx
-        self._ma.assign(output_idx, target)
         self._sync_output(state.output_local_idx)
 
     def _apply_return(self, state: OutputPowerState, target: int) -> None:
@@ -287,14 +303,14 @@ class MCUControl(Actor, SimulationModule):
     # ── Incoming protocol handlers ───────────────────────────────────
 
     async def _handle_borrow_request(self, msg: BorrowRequest) -> None:
-        """Neighbor asks to borrow group `msg.group_idx` (in our territory)."""
-        # Grant iff idle, reachable by requester, and not breaking our minimum
-        owner = self._ma.get_owner(msg.group_idx)
-        granted = False
-        if owner is None:
-            # Also ensure we ourselves don't currently need this group
-            # (only our outputs could need it; they would already own it)
-            granted = True
+        """Neighbor asks to borrow group `msg.group_idx` (in our territory).
+
+        Atomically reserve on grant — closing the cross-actor race where two
+        requesters both observe the group as idle and both get granted.
+        """
+        granted = self._ma.assign_if_idle(
+            msg.requester_output_idx, msg.group_idx,
+        )
         msg.response.set_result(granted)
 
     async def _handle_return_notify(self, msg: ReturnNotify) -> None:
@@ -333,11 +349,14 @@ class MCUControl(Actor, SimulationModule):
             state.pending_intergroup_close = 2
 
         if state.pending_output_relay_close == 2:
-            r = self._board.output_relays[i]
-            if r.state == RelayState.OPEN:
-                r.switch(self._step_index)
-            state.pending_output_relay_close = 0
+            # SPEC §11: Output relay may close only after ≥125 kW is prepared.
             self._sync_output(i)
+            if self._board.outputs[i].available_power_kw + 1e-9 >= MIN_START_POWER_KW:
+                r = self._board.output_relays[i]
+                if r.state == RelayState.OPEN:
+                    r.switch(self._step_index)
+                state.pending_output_relay_close = 0
+                self._sync_output(i)
         elif state.pending_output_relay_close == 1:
             state.pending_output_relay_close = 2
 
@@ -376,21 +395,64 @@ class MCUControl(Actor, SimulationModule):
             required_min = self._group_base + 2
             required_max = self._group_base + 3
 
+        # SPEC §6.3 initiator side: anchor groups may already be owned by
+        # another Output (same MCU or neighbor via a prior borrow). Force the
+        # holder to release before we claim them.
+        touched_neighbors: set[MCUControl] = set()
         for g in range(required_min, required_max + 1):
             owner = self._ma.get_owner(g)
-            if owner is not None and owner != self._output_base + output_local_idx:
-                other_local = owner - self._output_base
-                if 0 <= other_local < 2:
-                    self._force_return_group(other_local, g)
+            if owner is None or owner == self._output_base + output_local_idx:
+                continue
+            owner_mcu_id = owner // 2
+            other_local = owner - 2 * owner_mcu_id
+            if owner_mcu_id == self._mcu_id:
+                self._force_return_group(other_local, g)
+            else:
+                neighbor = self._neighbor_by_mcu_id(owner_mcu_id)
+                if neighbor is not None:
+                    neighbor._force_return_group(other_local, g)
+                    touched_neighbors.add(neighbor)
 
         state.interval_min = required_min
         state.interval_max = required_max
         state.borrow_counter = 0
         state.return_counter = 0
 
+        # Defensive sweep: any owner of g that no longer reports g in its
+        # interval is stale (e.g. force-return shrank the interval but didn't
+        # release this cell because the owner had it via a non-contiguous
+        # historical claim). Clear it before we attempt to assign.
+        my_idx = self._output_base + output_local_idx
         for g in range(required_min, required_max + 1):
-            if self._ma.get_owner(g) is None:
-                self._ma.assign(self._output_base + output_local_idx, g)
+            owner = self._ma.get_owner(g)
+            if owner is None or owner == my_idx:
+                continue
+            owner_state = None
+            owner_mcu_id = owner // 2
+            owner_local = owner - 2 * owner_mcu_id
+            if owner_mcu_id == self._mcu_id:
+                owner_state = self._output_states[owner_local]
+            else:
+                nb = self._neighbor_by_mcu_id(owner_mcu_id)
+                if nb is not None:
+                    owner_state = nb._output_states[owner_local]
+            if (
+                owner_state is None
+                or owner_state.interval_min is None
+                or not (owner_state.interval_min <= g <= owner_state.interval_max)
+            ):
+                self._ma.release(owner, g)
+
+        for g in range(required_min, required_max + 1):
+            if not self._ma.assign_if_idle(my_idx, g):
+                other = self._ma.get_owner(g)
+                print(
+                    f"  [WARN] step {self._step_index}: arrival at MCU{self._mcu_id}"
+                    f" O{output_local_idx} could not claim G{g}; held by Output {other}"
+                )
+
+        for nb in touched_neighbors:
+            nb._sync_foreign_relays(self._step_index)
         # Three-phase arrival (SPEC §11):
         #   Tick T   — arrival event only (all relays still OFF).
         #   Tick T+1 — close inter-group / bridge relays to form anchor path.
@@ -465,6 +527,12 @@ class MCUControl(Actor, SimulationModule):
         output_local_idx = state.output_local_idx
         output_idx = self._output_base + output_local_idx
 
+        # SPEC §11: Output relay must stay CLOSED until the EV has met its
+        # charging requirement — never open mid-charge.
+        v = self._board.outputs[output_local_idx].connected_vehicle
+        if v is not None and v.state != VehicleState.COMPLETE:
+            return
+
         r = self._board.output_relays[output_local_idx]
         if r.state == RelayState.CLOSED:
             r.switch(self._step_index)
@@ -520,17 +588,22 @@ class MCUControl(Actor, SimulationModule):
     def _find_expansion_target(
         self, state: OutputPowerState, allow_cross_mcu: bool
     ) -> int | None:
-        """Priority: right > left."""
+        """SPEC §6.1 local-first, then §2.2 right > left within same locality."""
         if state.interval_min is None or state.interval_max is None:
             return None
         output_idx = self._output_base + state.output_local_idx
         right = state.interval_max + 1
         left = state.interval_min - 1
 
-        if self._can_assign(output_idx, right, allow_cross_mcu):
+        if self._can_assign(output_idx, right, allow_cross_mcu=False):
             return right
-        if self._can_assign(output_idx, left, allow_cross_mcu):
+        if self._can_assign(output_idx, left, allow_cross_mcu=False):
             return left
+        if allow_cross_mcu:
+            if self._can_assign(output_idx, right, allow_cross_mcu=True):
+                return right
+            if self._can_assign(output_idx, left, allow_cross_mcu=True):
+                return left
         return None
 
     def _find_shrink_target(
@@ -619,8 +692,14 @@ class MCUControl(Actor, SimulationModule):
         if self._board.right_bridge_relay is not None:
             all_relays.append(self._board.right_bridge_relay)
 
+        # SPEC §11: never open an Output relay as a side-effect of a borrow/
+        # return resync. Output relays are only opened by _finalize_departure
+        # after the EV has met its charging requirement.
+        output_relay_set_all = set(self._board.output_relays)
         for r in all_relays:
             if r.state == RelayState.CLOSED and r not in needed:
+                if r in output_relay_set_all and not include_output:
+                    continue
                 r.switch(self._step_index)
         # Close inter-group / bridge relays first so the 125 kW path is
         # formed before the Output relay closes (SPEC §11, §17).
@@ -733,6 +812,15 @@ class MCUControl(Actor, SimulationModule):
 
     def _local_to_global(self, local_idx: int) -> int:
         return local_idx + self._group_base
+
+    def _neighbor_by_mcu_id(self, mcu_id: int) -> MCUControl | None:
+        if self._num_mcus <= 1:
+            return None
+        if mcu_id == (self._mcu_id + 1) % self._num_mcus:
+            return self.right_neighbor
+        if mcu_id == (self._mcu_id - 1 + self._num_mcus) % self._num_mcus:
+            return self.left_neighbor
+        return None
 
     def _is_local_group(self, global_idx: int) -> bool:
         local = global_idx - self._group_base

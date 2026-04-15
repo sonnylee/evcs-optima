@@ -73,19 +73,19 @@ class VisionOutput:
                 rid = r["relay_id"]
                 relay_state[rid] = "ON" if r["state"] == "CLOSED" else "OFF"
 
-        # Split deltas: output-switch relays vs group/bridge relays
+        # Ops columns derive from the authoritative RelayEventLog so they stay
+        # in sync with the Event column (SPEC §11/§17).
         output_ops: list[str] = []
         relay_ops: list[str] = []
-        for rid, cur in relay_state.items():
-            prev = self._prev_relay.get(rid)
-            if prev is not None and prev != cur:
-                lab = self._relay_labels.get(rid, rid)
-                verb = "closed" if cur == "ON" else "opened"
-                msg = f"{lab} {verb}"
-                if lab.split(".")[1].startswith("O"):
-                    output_ops.append(msg)
-                else:
-                    relay_ops.append(msg)
+        for ev in new_relay_events:
+            lab = self._relay_labels.get(ev["relay_id"], ev["relay_id"])
+            verb = "closed" if ev["to_state"] == "CLOSED" else "opened"
+            msg = f"{lab} {verb}"
+            suffix = lab.split(".")[1] if "." in lab else ""
+            if suffix.startswith("O"):
+                output_ops.append(msg)
+            else:
+                relay_ops.append(msg)
 
         event_parts: list[str] = []
         for a in arrivals:
