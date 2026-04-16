@@ -161,6 +161,14 @@ class SimulationEngine:
             self.traffic_simulator.prime_initial_arrivals()
             self._sync_traffic_vehicles()
         while not tc.is_finished():
+            # Align MCU clocks with the sim clock before arrivals dispatch.
+            # Relay opens driven by handle_vehicle_arrival (conflict release,
+            # SPEC §6.3) fire before the Tick; without this, they get tagged
+            # with the previous step's index and end up orphaned in the
+            # RelayEventLog — visible as state-column changes with an empty
+            # "Relays Ops" column in the trace CSV.
+            for mcu in self.mcu_controls:
+                mcu._step_index = tc.step_index
             if self.traffic_simulator is not None:
                 self.traffic_simulator.step(dt)
                 self._sync_traffic_vehicles()
