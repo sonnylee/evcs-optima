@@ -26,6 +26,9 @@ class SimulationConfig:
     num_mcus: int = 1
     vehicle_profiles: list[VehicleProfile] = field(default_factory=list)
     initial_vehicles: list[InitialVehiclePlacement] = field(default_factory=list)
+    # SPEC §6.1/§6.2: borrow/return only fires after the trigger condition
+    # has held for N consecutive steps. Tunable per run.
+    consecutive_threshold: int = 3
 
 
 _CSV_PATH = os.path.join(
@@ -134,6 +137,7 @@ class ConfigLoader:
             dt=data.get("dt", 1.0),
             t_end=data.get("t_end", 3600.0),
             num_mcus=data.get("num_mcus", 1),
+            consecutive_threshold=data.get("consecutive_threshold", 3),
             vehicle_profiles=profiles,
             initial_vehicles=vehicles,
         )

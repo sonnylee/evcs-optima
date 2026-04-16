@@ -34,7 +34,11 @@ if TYPE_CHECKING:
     from simulation.log.relay_event_log import RelayEventLog
 
 
-CONSECUTIVE_THRESHOLD: int = 3
+# SPEC §6.1/§6.2: trigger must hold for N consecutive steps before borrow/
+# return actually fires. Default here matches the historical hard-coded 3;
+# runtime value is `MCUControl._consecutive_threshold`, settable via
+# `SimulationConfig.consecutive_threshold`.
+DEFAULT_CONSECUTIVE_THRESHOLD: int = 3
 
 
 @dataclass
@@ -70,6 +74,7 @@ class MCUControl(Actor, SimulationModule):
         event_log: RelayEventLog,
         station: ChargingStation | None = None,
         num_mcus: int = 1,
+        consecutive_threshold: int = DEFAULT_CONSECUTIVE_THRESHOLD,
     ):
         Actor.__init__(self, name=f"MCU{mcu_id}")
         self._mcu_id = mcu_id
@@ -79,6 +84,7 @@ class MCUControl(Actor, SimulationModule):
         self._event_log = event_log
         self._station = station
         self._num_mcus = num_mcus
+        self._consecutive_threshold = max(1, consecutive_threshold)
         self._step_index: int = 0
         self._group_base: int = mcu_id * 4
         self._output_base: int = mcu_id * 2
@@ -153,7 +159,7 @@ class MCUControl(Actor, SimulationModule):
             else:
                 state.borrow_counter = 0
 
-            if state.borrow_counter >= CONSECUTIVE_THRESHOLD:
+            if state.borrow_counter >= self._consecutive_threshold:
                 self._try_borrow_local(state)
                 state.borrow_counter = 0
 
@@ -164,7 +170,7 @@ class MCUControl(Actor, SimulationModule):
             else:
                 state.return_counter = 0
 
-            if state.return_counter >= CONSECUTIVE_THRESHOLD:
+            if state.return_counter >= self._consecutive_threshold:
                 self._try_return_local(state)
                 state.return_counter = 0
 
@@ -197,7 +203,7 @@ class MCUControl(Actor, SimulationModule):
                 else:
                     state.borrow_counter = 0
 
-                if state.borrow_counter >= CONSECUTIVE_THRESHOLD:
+                if state.borrow_counter >= self._consecutive_threshold:
                     await self._try_borrow_async(state)
                     state.borrow_counter = 0
 
@@ -208,7 +214,7 @@ class MCUControl(Actor, SimulationModule):
                 else:
                     state.return_counter = 0
 
-                if state.return_counter >= CONSECUTIVE_THRESHOLD:
+                if state.return_counter >= self._consecutive_threshold:
                     await self._try_return_async(state)
                     state.return_counter = 0
         finally:

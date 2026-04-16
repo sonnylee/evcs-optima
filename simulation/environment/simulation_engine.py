@@ -78,6 +78,7 @@ class SimulationEngine:
                 event_log=self.event_log,
                 station=self.station,
                 num_mcus=config.num_mcus,
+                consecutive_threshold=config.consecutive_threshold,
             )
             for i in range(config.num_mcus)
         ]
