@@ -1,8 +1,8 @@
 """Topology helpers for multi-MCU layouts.
 
 SPEC §2.2 defines the MCU arrangement:
-  * N < 4  → linear chain (bridges between consecutive MCUs only)
-  * N >= 4 → ring (bridges wrap around to close the loop)
+  * N <= 2 → linear chain (bridges between consecutive MCUs only)
+  * N >= 3 → ring (bridges wrap around to close the loop)
 
 Centralizing the ring-vs-linear rules here avoids duplicating the same
 arithmetic across `RelayMatrix`, `ModuleAssignment`, and `Validator`.
@@ -12,15 +12,15 @@ from __future__ import annotations
 
 
 def is_ring(num_mcus: int) -> bool:
-    """SPEC §2.2: ring topology kicks in at 4+ MCUs."""
-    return num_mcus >= 4
+    """SPEC §2.2: ring topology kicks in at 3+ MCUs."""
+    return num_mcus >= 3
 
 
 def adjacent_pairs(num_mcus: int) -> list[tuple[int, int]]:
     """MCU index pairs that share a physical bridge relay.
 
-    Linear (`N < 4`): (0,1), (1,2), …, (N-2, N-1).
-    Ring   (`N >= 4`): linear pairs plus (N-1, 0) to close the loop.
+    Linear (`N == 2`): (0,1).
+    Ring   (`N >= 3`): (0,1), (1,2), …, (N-2, N-1), (N-1, 0).
     Single MCU: no pairs.
     """
     if num_mcus <= 1:

@@ -42,7 +42,13 @@
 - 2 個 Output：O1 直連 G1，O2 直連 G4
 - Relay 連接相鄰 Group，控制功率流向與 Group 串聯/斷開
 
-**3-MCU 線性參考配置（開發用）：**
+**拓撲規則：**
+
+- `N == 1`：單 MCU，無任何 Bridge Relay
+- `N == 2`：線性拓撲，僅 MCU1↔MCU2 一條 Bridge
+- `N >= 3`：環形拓撲（Ring），首尾 MCU 透過 Bridge 繞回形成閉環
+
+**3-MCU 環形參考配置（開發用）：**
 
 ```
 O1   O2       O3   O4       O5   O6
@@ -52,7 +58,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
        MCU1                   MCU2                     MCU3
 ```
 
-- R1、R5、R9 為對外的 Bridge Relay（跨 MCU 邊界）
+- R1、R5、R9 為對外的 Bridge Relay（跨 MCU 邊界；N>=3 時形成環形閉環）
 - MCU2 為本體，作為演算法的 Local 視角
 - 充電槍與 Group 直連對應：O1↔G1、O2↔G4、O3↔G5、O4↔G8、O5↔G9、O6↔G12
 

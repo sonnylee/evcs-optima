@@ -83,10 +83,10 @@ class SimulationEngine:
             for i in range(config.num_mcus)
         ]
 
-        # Wire neighbors (ring for N>=4, linear otherwise)
+        # Wire neighbors (ring for N>=3, linear otherwise)
         N = config.num_mcus
         for i, mcu in enumerate(self.mcu_controls):
-            if N >= 4:
+            if N >= 3:
                 mcu.left_neighbor = self.mcu_controls[(i - 1) % N]
                 mcu.right_neighbor = self.mcu_controls[(i + 1) % N]
             else:

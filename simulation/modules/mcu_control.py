@@ -100,9 +100,9 @@ class MCUControl(Actor, SimulationModule):
         self._group_base: int = mcu_id * GROUPS_PER_MCU
         self._output_base: int = mcu_id * OUTPUTS_PER_MCU
         self._num_groups_total: int = GROUPS_PER_MCU * num_mcus
-        # SPEC §2.2: ring topology kicks in at 4+ MCUs, so inter-MCU
+        # SPEC §2.2: ring topology kicks in at 3+ MCUs, so inter-MCU
         # borrow/return may wrap across the num_groups_total boundary.
-        self._ring_enabled: bool = num_mcus >= 4
+        self._ring_enabled: bool = num_mcus >= 3
 
         # Neighbor actor refs (wired post-construction by engine)
         self.left_neighbor: MCUControl | None = None
@@ -878,7 +878,7 @@ class MCUControl(Actor, SimulationModule):
     def _wrap(self, virtual_idx: int) -> int:
         """Map a (possibly out-of-range) virtual group index to a physical one.
 
-        Ring-wrap is used only in ring topology (num_mcus >= 4). Linear
+        Ring-wrap is used only in ring topology (num_mcus >= 3). Linear
         topologies leave the index untouched so out-of-range values still
         fall through the bounds checks in callers.
         """

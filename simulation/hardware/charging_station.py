@@ -22,13 +22,13 @@ class ChargingStation(SimulationModule):
         )
 
         # Determine which MCUs own a right bridge:
-        # - ring (num_mcus >= 4): every MCU owns its right bridge (wrap-around)
-        # - linear (1 < num_mcus < 4): all MCUs except the last own a right bridge
+        # - ring (num_mcus >= 3): every MCU owns its right bridge (wrap-around)
+        # - linear (num_mcus == 2): MCU 0 owns the only bridge
         # - single MCU: no bridges
         def has_right_bridge(i: int) -> bool:
             if num_mcus <= 1:
                 return False
-            if num_mcus >= 4:
+            if num_mcus >= 3:
                 return True
             return i < num_mcus - 1
 
@@ -62,7 +62,7 @@ class ChargingStation(SimulationModule):
     def validate(self) -> list[str]:
         violations: list[str] = []
         ma = self.module_assignment
-        ring = self.num_mcus >= 4
+        ring = self.num_mcus >= 3
         for o in range(ma.num_outputs):
             groups = ma.get_groups_for_output(o)
             if groups and not ma.is_contiguous(o, ring=ring):

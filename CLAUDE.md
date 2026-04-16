@@ -121,7 +121,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
   - *Initiator* (new vehicle arrives): find anchor → determine initial interval → scan Module Assignment for occupied Groups → notify the holder to release.
   - *Responder* (receives release notice for `Gx`): find own anchor → if `anchor < Gx` return from MAX end, if `anchor > Gx` return from MIN end → switch relays.
 - **Ring addressing (SPEC §7.1)**: `prev = (self_idx - 1 + N) % N`, `next = (self_idx + 1 + N) % N`. The `+N` form is defensive for C-portability (avoids negative-modulo behavior); each MCU only needs its own index. Hardware lives on a CAN bus (SPEC §7.2) — the formula maps directly to neighbor CAN IDs.
-- **Ring-wrap borrow (N ≥ 4)**: in ring topology, borrow may cross the wrap seam — e.g. M1.O1 (anchor G0) extending left reaches M4.G3 via M1.R1 (the M4↔M1 bridge). Internally `MCUControl` uses "virtual" group indices that may go below 0 or beyond `4N − 1`; `_wrap(g) = g mod (4N)` maps them back to physical groups (see `simulation/modules/mcu_control.py`). Linear topologies (N < 4) skip wrapping.
+- **Ring-wrap borrow (N ≥ 3)**: in ring topology, borrow may cross the wrap seam — e.g. on a 4-MCU ring, M1.O1 (anchor G0) extending left reaches M4.G3 via M1.R1 (the M4↔M1 bridge). Internally `MCUControl` uses "virtual" group indices that may go below 0 or beyond `4N − 1`; `_wrap(g) = g mod (4N)` maps them back to physical groups (see `simulation/modules/mcu_control.py`). Linear topologies (N ≤ 2) skip wrapping.
 
 ### Critical Constraints
 
