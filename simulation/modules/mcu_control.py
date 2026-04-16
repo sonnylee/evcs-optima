@@ -82,6 +82,10 @@ class MCUControl(Actor, SimulationModule):
         self._step_index: int = 0
         self._group_base: int = mcu_id * 4
         self._output_base: int = mcu_id * 2
+        self._num_groups_total: int = 4 * num_mcus
+        # SPEC §2.2: ring topology kicks in at 4+ MCUs, so inter-MCU
+        # borrow/return may wrap across the num_groups_total boundary.
+        self._ring_enabled: bool = num_mcus >= 4
 
         # Neighbor actor refs (wired post-construction by engine)
         self.left_neighbor: MCUControl | None = None
@@ -235,8 +239,10 @@ class MCUControl(Actor, SimulationModule):
             self._apply_borrow(state, target)
             return
 
-        # Cross-MCU: determine which neighbor owns the target group
-        neighbor_mcu = target // 4
+        # Cross-MCU: determine which neighbor owns the target group.
+        # `target` may be virtual (wrap across ring edge); dispatch on physical.
+        target_phys = self._wrap(target)
+        neighbor_mcu = target_phys // 4
         if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
             neighbor = self.right_neighbor
         else:
@@ -244,7 +250,7 @@ class MCUControl(Actor, SimulationModule):
 
         output_idx = self._output_base + state.output_local_idx
         granted = await send_borrow_request(
-            neighbor, self._mcu_id, target, output_idx,
+            neighbor, self._mcu_id, target_phys, output_idx,
         )
         if granted:
             # Responder already reserved `target` for us in ModuleAssignment;
@@ -259,12 +265,13 @@ class MCUControl(Actor, SimulationModule):
             return
 
         if not self._is_local_group(target):
-            neighbor_mcu = target // 4
+            target_phys = self._wrap(target)
+            neighbor_mcu = target_phys // 4
             if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
                 neighbor = self.right_neighbor
             else:
                 neighbor = self.left_neighbor
-            await send_return_notify(neighbor, self._mcu_id, target)
+            await send_return_notify(neighbor, self._mcu_id, target_phys)
 
         self._apply_return(state, target)
         if not self._is_local_group(target) and neighbor is not None:
@@ -274,11 +281,14 @@ class MCUControl(Actor, SimulationModule):
         self, state: OutputPowerState, target: int,
         already_assigned: bool = False,
     ) -> None:
+        """`target` may be a virtual index (out of [0, num_groups)) for ring
+        wrap; physical index is used when talking to ModuleAssignment."""
         if state.interval_min is None or state.interval_max is None:
             return
         output_idx = self._output_base + state.output_local_idx
+        target_phys = self._wrap(target)
         if not already_assigned:
-            if not self._ma.assign_if_idle(output_idx, target):
+            if not self._ma.assign_if_idle(output_idx, target_phys):
                 # Someone else claimed it between target selection and apply.
                 return
         if target < state.interval_min:
@@ -297,7 +307,7 @@ class MCUControl(Actor, SimulationModule):
             state.interval_max = target - 1
         self._apply_global_relay_state()
         output_idx = self._output_base + state.output_local_idx
-        self._ma.release(output_idx, target)
+        self._ma.release(output_idx, self._wrap(target))
         self._sync_output(state.output_local_idx)
 
     # ── Incoming protocol handlers ───────────────────────────────────
@@ -439,7 +449,9 @@ class MCUControl(Actor, SimulationModule):
             if (
                 owner_state is None
                 or owner_state.interval_min is None
-                or not (owner_state.interval_min <= g <= owner_state.interval_max)
+                or not self._virtual_interval_contains(
+                    owner_state.interval_min, owner_state.interval_max, g
+                )
             ):
                 self._ma.release(owner, g)
 
@@ -494,6 +506,7 @@ class MCUControl(Actor, SimulationModule):
                 include_output=False,
             ))
 
+        foreign_seen: set[int] = set()
         for g in range(self._group_base, self._group_base + 4):
             owner = self._ma.get_owner(g)
             if owner is None:
@@ -501,22 +514,17 @@ class MCUControl(Actor, SimulationModule):
             local_out = owner - self._output_base
             if 0 <= local_out < 2:
                 continue
-            groups = self._ma.get_groups_for_output(owner)
-            if not groups:
+            if owner in foreign_seen:
                 continue
-            gmin, gmax = min(groups), max(groups)
-            local_lo = max(gmin, self._group_base)
-            local_hi = min(gmax, self._group_base + 3)
-            for gg in range(local_lo, local_hi):
-                li = gg - self._group_base
-                if 0 <= li < 3:
-                    still_needed.add(self._board.inter_group_relays[li])
-            if (
-                self._board.right_bridge_relay is not None
-                and gmin <= self._group_base + 3
-                and gmax >= self._group_base + 4
+            foreign_seen.add(owner)
+            span = self._foreign_virtual_span(owner)
+            if span is None:
+                continue
+            fmin, fmax = span
+            for r in self._compute_required_relays(
+                0, fmin, fmax, include_output=False
             ):
-                still_needed.add(self._board.right_bridge_relay)
+                still_needed.add(r)
 
         for r in departing - still_needed:
             if r.state == RelayState.CLOSED:
@@ -538,9 +546,10 @@ class MCUControl(Actor, SimulationModule):
             r.switch(self._step_index)
 
         if state.interval_min is not None:
-            for g in range(state.interval_min, state.interval_max + 1):
-                if self._ma.get_owner(g) == output_idx:
-                    self._ma.release(output_idx, g)
+            for g_virt in range(state.interval_min, state.interval_max + 1):
+                g_phys = self._wrap(g_virt)
+                if self._ma.get_owner(g_phys) == output_idx:
+                    self._ma.release(output_idx, g_phys)
 
         state.interval_min = None
         state.interval_max = None
@@ -554,31 +563,53 @@ class MCUControl(Actor, SimulationModule):
     # ── Force return ─────────────────────────────────────────────────
 
     def _force_return_group(self, other_local_idx: int, group_idx: int) -> None:
+        """Release `group_idx` (physical) plus everything beyond it on the same
+        edge of the interval. Wrap-aware: the side to shrink is chosen by the
+        target's virtual position relative to the anchor, not by comparing
+        physical indices."""
         state = self._output_states[other_local_idx]
-        if state.interval_min is None:
+        if state.interval_min is None or state.interval_max is None:
             return
         output_idx = self._output_base + other_local_idx
 
-        if state.anchor_group_idx < group_idx:
+        # Find the virtual position of the target and the anchor inside the
+        # interval by scanning virtual indices once.
+        v_target: int | None = None
+        v_anchor: int | None = None
+        for v in range(state.interval_min, state.interval_max + 1):
+            phys = self._wrap(v)
+            if v_target is None and phys == group_idx:
+                v_target = v
+            if v_anchor is None and phys == state.anchor_group_idx:
+                v_anchor = v
+        if v_target is None:
+            return  # not owned in this interval — nothing to force
+        if v_anchor is None:
+            # Shouldn't happen, but fall back to physical anchor.
+            v_anchor = state.anchor_group_idx
+
+        if v_target > v_anchor:
             while (
                 state.interval_max is not None
-                and state.interval_max >= group_idx
-                and state.interval_max > state.anchor_group_idx
+                and state.interval_max >= v_target
+                and state.interval_max > v_anchor
             ):
-                released = state.interval_max
+                released_virt = state.interval_max
                 state.interval_max -= 1
-                if self._ma.get_owner(released) == output_idx:
-                    self._ma.release(output_idx, released)
+                released_phys = self._wrap(released_virt)
+                if self._ma.get_owner(released_phys) == output_idx:
+                    self._ma.release(output_idx, released_phys)
         else:
             while (
                 state.interval_min is not None
-                and state.interval_min <= group_idx
-                and state.interval_min < state.anchor_group_idx
+                and state.interval_min <= v_target
+                and state.interval_min < v_anchor
             ):
-                released = state.interval_min
+                released_virt = state.interval_min
                 state.interval_min += 1
-                if self._ma.get_owner(released) == output_idx:
-                    self._ma.release(output_idx, released)
+                released_phys = self._wrap(released_virt)
+                if self._ma.get_owner(released_phys) == output_idx:
+                    self._ma.release(output_idx, released_phys)
 
         self._apply_global_relay_state()
         self._sync_output(other_local_idx)
@@ -588,22 +619,33 @@ class MCUControl(Actor, SimulationModule):
     def _find_expansion_target(
         self, state: OutputPowerState, allow_cross_mcu: bool
     ) -> int | None:
-        """SPEC §6.1 local-first, then §2.2 right > left within same locality."""
+        """SPEC §6.1 local-first, then §2.2 right > left within same locality.
+
+        Returns a VIRTUAL index (may be negative or >= num_groups_total in
+        ring topology); callers should wrap to a physical index when
+        indexing into ModuleAssignment.
+        """
         if state.interval_min is None or state.interval_max is None:
             return None
         output_idx = self._output_base + state.output_local_idx
-        right = state.interval_max + 1
-        left = state.interval_min - 1
+        right_v = state.interval_max + 1
+        left_v = state.interval_min - 1
 
-        if self._can_assign(output_idx, right, allow_cross_mcu=False):
-            return right
-        if self._can_assign(output_idx, left, allow_cross_mcu=False):
-            return left
+        # Span guard: never allow the interval to cover the whole ring.
+        if right_v - state.interval_min + 1 > self._num_groups_total:
+            right_v = None  # type: ignore[assignment]
+        if state.interval_max - left_v + 1 > self._num_groups_total:
+            left_v = None  # type: ignore[assignment]
+
+        if right_v is not None and self._can_assign(output_idx, right_v, allow_cross_mcu=False):
+            return right_v
+        if left_v is not None and self._can_assign(output_idx, left_v, allow_cross_mcu=False):
+            return left_v
         if allow_cross_mcu:
-            if self._can_assign(output_idx, right, allow_cross_mcu=True):
-                return right
-            if self._can_assign(output_idx, left, allow_cross_mcu=True):
-                return left
+            if right_v is not None and self._can_assign(output_idx, right_v, allow_cross_mcu=True):
+                return right_v
+            if left_v is not None and self._can_assign(output_idx, left_v, allow_cross_mcu=True):
+                return left_v
         return None
 
     def _find_shrink_target(
@@ -635,13 +677,17 @@ class MCUControl(Actor, SimulationModule):
     def _can_assign(
         self, output_idx: int, global_group_idx: int, allow_cross_mcu: bool
     ) -> bool:
-        if global_group_idx < 0 or global_group_idx >= self._ma.num_groups:
+        # Accept virtual indices (out of [0, num_groups)) and wrap in ring mode.
+        phys = self._wrap(global_group_idx)
+        if phys < 0 or phys >= self._ma.num_groups:
             return False
+        # Locality check uses the virtual index: any out-of-range (wrapped)
+        # target is by definition cross-MCU.
         if not allow_cross_mcu and not self._is_local_group(global_group_idx):
             return False
-        if self._ma._matrix[output_idx][global_group_idx] == -1:
+        if self._ma._matrix[output_idx][phys] == -1:
             return False
-        if self._ma.get_owner(global_group_idx) is not None:
+        if self._ma.get_owner(phys) is not None:
             return False
         return True
 
@@ -663,7 +709,10 @@ class MCUControl(Actor, SimulationModule):
                     include_output=include_output,
                 ))
         # Cross-MCU borrows: include relays owned by this MCU that are needed
-        # by foreign outputs whose intervals extend into our territory.
+        # by foreign outputs whose intervals extend into our territory. Use
+        # each foreign output's virtual span so ring-wrapped intervals aren't
+        # flattened by min()/max() on the physical group set.
+        foreign_seen: set[int] = set()
         for g in range(self._group_base, self._group_base + 4):
             owner = self._ma.get_owner(g)
             if owner is None:
@@ -671,22 +720,17 @@ class MCUControl(Actor, SimulationModule):
             local_out = owner - self._output_base
             if 0 <= local_out < 2:
                 continue  # already handled via local interval
-            groups = self._ma.get_groups_for_output(owner)
-            if not groups:
+            if owner in foreign_seen:
                 continue
-            gmin, gmax = min(groups), max(groups)
-            local_lo = max(gmin, self._group_base)
-            local_hi = min(gmax, self._group_base + 3)
-            for gg in range(local_lo, local_hi):
-                li = gg - self._group_base
-                if 0 <= li < 3:
-                    needed.add(self._board.inter_group_relays[li])
-            if (
-                self._board.right_bridge_relay is not None
-                and gmin <= self._group_base + 3
-                and gmax >= self._group_base + 4
+            foreign_seen.add(owner)
+            span = self._foreign_virtual_span(owner)
+            if span is None:
+                continue
+            fmin, fmax = span
+            for r in self._compute_required_relays(
+                0, fmin, fmax, include_output=False
             ):
-                needed.add(self._board.right_bridge_relay)
+                needed.add(r)
 
         all_relays = list(self._board.output_relays) + list(self._board.inter_group_relays)
         if self._board.right_bridge_relay is not None:
@@ -719,37 +763,40 @@ class MCUControl(Actor, SimulationModule):
         self, output_local_idx: int, new_min: int, new_max: int,
         include_output: bool = True,
     ) -> list[Relay]:
-        """Relays owned by THIS MCU that must be CLOSED for this interval."""
+        """Relays owned by THIS MCU that must be CLOSED for this interval.
+
+        Accepts virtual indices (ring wrap). Walks each consecutive virtual
+        pair (v, v+1) and asks: is there a physical wire between wrap(v) and
+        wrap(v+1) in my territory? — if so, that relay must close.
+        """
         relays: list[Relay] = []
         if include_output:
             relays.append(self._board.output_relays[output_local_idx])
 
-        # Local inter-group relays (within this MCU's 4 groups)
-        local_lo = max(new_min, self._group_base)
-        local_hi = min(new_max, self._group_base + 3)
-        for g in range(local_lo, local_hi):
-            local_i = g - self._group_base
-            if 0 <= local_i < 3:
-                relays.append(self._board.inter_group_relays[local_i])
+        gb = self._group_base
+        N = self._num_groups_total
 
-        # Right bridge: needed iff interval spans from this MCU into next
-        if (
-            self._board.right_bridge_relay is not None
-            and new_min <= self._group_base + 3
-            and new_max >= self._group_base + 4
-        ):
-            relays.append(self._board.right_bridge_relay)
-
-        # Left bridge (owned by prev MCU): needed iff interval extends left into prev MCU
-        if (
-            self._station is not None
-            and new_min < self._group_base
-            and new_max >= self._group_base
-        ):
-            prev_mcu = (self._mcu_id - 1 + self._num_mcus) % self._num_mcus
-            br = self._station.bridge_relay_between(prev_mcu)
-            if br is not None:
-                relays.append(br)
+        for v in range(new_min, new_max):
+            p = self._wrap(v)
+            pn = self._wrap(v + 1)
+            # Local inter-group relay (both ends in my territory, consecutive).
+            if gb <= p <= gb + 2 and pn == p + 1:
+                relays.append(self._board.inter_group_relays[p - gb])
+                continue
+            # Right bridge I own (my G3 → next MCU's G0).
+            if self._board.right_bridge_relay is not None and p == gb + 3:
+                next_g0 = (gb + 4) % N if self._ring_enabled else gb + 4
+                if pn == next_g0:
+                    relays.append(self._board.right_bridge_relay)
+                    continue
+            # Left bridge (owned by prev MCU; fetched via station).
+            if self._station is not None and pn == gb:
+                prev_gb3 = (gb - 1) % N if self._ring_enabled else gb - 1
+                if p == prev_gb3:
+                    prev_mcu = (self._mcu_id - 1 + self._num_mcus) % self._num_mcus
+                    br = self._station.bridge_relay_between(prev_mcu)
+                    if br is not None:
+                        relays.append(br)
 
         return relays
 
@@ -766,10 +813,12 @@ class MCUControl(Actor, SimulationModule):
             return
 
         # Build group list by walking from interval_min to interval_max globally.
-        # Cross-MCU groups are fetched from the station's boards.
+        # Cross-MCU groups are fetched from the station's boards. Indices may be
+        # virtual (ring wrap) — normalize via _wrap for the physical lookup.
         groups = []
         total_power = 0.0
-        for g_global in range(state.interval_min, state.interval_max + 1):
+        for g_virtual in range(state.interval_min, state.interval_max + 1):
+            g_global = self._wrap(g_virtual)
             mcu = g_global // 4
             local = g_global % 4
             if self._station is not None and 0 <= mcu < len(self._station.boards):
@@ -783,7 +832,9 @@ class MCUControl(Actor, SimulationModule):
 
         output.groups = groups
         output.available_power_kw = total_power
-        output._group_indices = list(range(state.interval_min, state.interval_max + 1))
+        output._group_indices = [
+            self._wrap(g) for g in range(state.interval_min, state.interval_max + 1)
+        ]
 
     # ── Status / helpers ─────────────────────────────────────────────
 
@@ -813,6 +864,55 @@ class MCUControl(Actor, SimulationModule):
     def _local_to_global(self, local_idx: int) -> int:
         return local_idx + self._group_base
 
+    def _wrap(self, virtual_idx: int) -> int:
+        """Map a (possibly out-of-range) virtual group index to a physical one.
+
+        Ring-wrap is used only in ring topology (num_mcus >= 4). Linear
+        topologies leave the index untouched so out-of-range values still
+        fall through the bounds checks in callers.
+        """
+        if self._ring_enabled:
+            return virtual_idx % self._num_groups_total
+        return virtual_idx
+
+    def _virtual_interval_contains(
+        self, vmin: int | None, vmax: int | None, g_phys: int
+    ) -> bool:
+        """Does the virtual interval [vmin, vmax] cover the given physical group?"""
+        if vmin is None or vmax is None:
+            return False
+        if not self._ring_enabled:
+            return vmin <= g_phys <= vmax
+        N = self._num_groups_total
+        for v in (g_phys, g_phys - N, g_phys + N):
+            if vmin <= v <= vmax:
+                return True
+        return False
+
+    def _foreign_virtual_span(
+        self, foreign_output_idx: int
+    ) -> tuple[int, int] | None:
+        """Read a sibling Output's (virtual) interval through its MCU.
+
+        Only valid for outputs on THIS MCU or an adjacent one — cross-MCU
+        borrow is restricted to neighbors per SPEC §11 (Ring Topology).
+        """
+        owner_mcu_id = foreign_output_idx // 2
+        owner_local = foreign_output_idx - owner_mcu_id * 2
+        mcu = None
+        if owner_mcu_id == self._mcu_id:
+            mcu = self
+        else:
+            mcu = self._neighbor_by_mcu_id(owner_mcu_id)
+        if mcu is None:
+            return None
+        if not (0 <= owner_local < len(mcu._output_states)):
+            return None
+        s = mcu._output_states[owner_local]
+        if s.interval_min is None or s.interval_max is None:
+            return None
+        return (s.interval_min, s.interval_max)
+
     def _neighbor_by_mcu_id(self, mcu_id: int) -> MCUControl | None:
         if self._num_mcus <= 1:
             return None
@@ -830,8 +930,9 @@ class MCUControl(Actor, SimulationModule):
         target = self._find_shrink_target(state, prefer_cross_mcu=False)
         if target is None:
             return None
-        mcu = target // 4
-        local = target % 4
+        target_phys = self._wrap(target)
+        mcu = target_phys // 4
+        local = target_phys % 4
         if self._station is not None and 0 <= mcu < len(self._station.boards):
             return self._station.boards[mcu].groups[local].total_power_kw
         if self._is_local_group(target):

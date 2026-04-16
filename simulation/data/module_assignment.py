@@ -74,12 +74,22 @@ class ModuleAssignment:
     def get_groups_for_output(self, output_idx: int) -> list[int]:
         return [g for g in range(self.num_groups) if self._matrix[output_idx][g] == 1]
 
-    def is_contiguous(self, output_idx: int) -> bool:
+    def is_contiguous(self, output_idx: int, ring: bool = False) -> bool:
         groups = self.get_groups_for_output(output_idx)
         if len(groups) <= 1:
             return True
         groups.sort()
-        return groups[-1] - groups[0] == len(groups) - 1
+        if groups[-1] - groups[0] == len(groups) - 1:
+            return True
+        if ring:
+            # Wrap-around contiguity: walk the sorted physical groups in a
+            # ring of size `num_groups`; exactly one gap between consecutive
+            # entries (the wrap seam) should be > 1 step.
+            N = self.num_groups
+            gaps = [(groups[(i + 1) % len(groups)] - groups[i]) % N
+                    for i in range(len(groups))]
+            return sum(1 for d in gaps if d != 1) == 1
+        return False
 
     def to_dict(self) -> dict[str, Any]:
         return {

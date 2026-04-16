@@ -62,9 +62,10 @@ class ChargingStation(SimulationModule):
     def validate(self) -> list[str]:
         violations: list[str] = []
         ma = self.module_assignment
+        ring = self.num_mcus >= 4
         for o in range(ma.num_outputs):
             groups = ma.get_groups_for_output(o)
-            if groups and not ma.is_contiguous(o):
+            if groups and not ma.is_contiguous(o, ring=ring):
                 violations.append(f"Output {o}: non-contiguous groups {groups}")
         for g in range(ma.num_groups):
             owners = [o for o in range(ma.num_outputs) if ma._matrix[o][g] == 1]
