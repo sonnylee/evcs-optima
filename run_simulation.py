@@ -11,7 +11,6 @@ from simulation.utils.interactive_prompt import prompt_until_confirmed
 from simulation.utils.schedule_builder import build_config_and_schedule
 
 
-NUM_MCUS = 4
 OUTPUTS_PER_MCU = 2
 T_END = 7200.0
 
@@ -19,16 +18,17 @@ T_END = 7200.0
 def main() -> int:
     params = prompt_until_confirmed()
 
-    num_outputs = NUM_MCUS * OUTPUTS_PER_MCU
+    num_mcus = params.num_mcus
+    num_outputs = num_mcus * OUTPUTS_PER_MCU
     config, schedule, profile_map = build_config_and_schedule(
         params,
         num_outputs=num_outputs,
         t_end=T_END,
-        num_mcus=NUM_MCUS,
+        num_mcus=num_mcus,
     )
 
     scenario_name = (
-        f"Interactive_{params.arrival_order}_"
+        f"Interactive_N{num_mcus}_{params.arrival_order}_"
         f"int-{params.interval_mode}-{params.interval_min}-{params.interval_max}_"
         f"soc0-{params.soc_init_mode}-{params.soc_init_lo}-{params.soc_init_hi}_"
         f"soc1-{params.soc_tgt_mode}-{params.soc_tgt_lo}-{params.soc_tgt_hi}"

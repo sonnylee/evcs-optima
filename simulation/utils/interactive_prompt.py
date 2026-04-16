@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 @dataclass
 class SimParams:
+    num_mcus: int               # 1..12 (SPEC §2.2 stage-2 range)
     arrival_order: str          # "seq" | "rand"
     interval_mode: str          # "fixed" | "rand"
     interval_min: int           # minutes
@@ -43,8 +44,12 @@ def _ask_int(label: str, lo: int, hi: int) -> int:
 def prompt_params() -> SimParams:
     print("=== EVCS Simulation Parameter Setup ===\n")
 
+    # Q0 number of MCUs (SPEC §2.2: 1~12)
+    print("[Q0] Number of MCUs (1~12)")
+    num_mcus = _ask_int("  [Q0-1] Enter number of MCUs (1~12): ", 1, 12)
+
     # Q1 arrival order
-    print("[Q1] Vehicle arrival order at charging guns")
+    print("\n[Q1] Vehicle arrival order at charging guns")
     print("  A) Sequential")
     print("  B) Random")
     q1 = _ask_choice("Select [A/B]: ", ("A", "B"))
@@ -114,6 +119,7 @@ def prompt_params() -> SimParams:
         )
 
     return SimParams(
+        num_mcus=num_mcus,
         arrival_order=arrival_order,
         interval_mode=interval_mode,
         interval_min=interval_min,
@@ -136,6 +142,7 @@ def _fmt_range(mode: str, lo: int, hi: int, unit: str = "") -> str:
 
 def print_summary(p: SimParams) -> None:
     print("\n=== Parameter Summary ===")
+    print(f"Number of MCUs : {p.num_mcus}")
     print(f"Arrival order  : {'Sequential' if p.arrival_order == 'seq' else 'Random'}")
     if p.interval_mode == "fixed":
         print(f"Arrival interval: Fixed {p.interval_min} min")

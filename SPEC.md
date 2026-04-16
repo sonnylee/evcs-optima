@@ -690,6 +690,9 @@ Scenario_10: MCU1(O1:ON, O2:ON) ; MCU2(O1:ON, O2:ON) ; MCU3(O1:ON) ; MCU4(OFF)
 
 === EVCS Simulation Parameter Setup ===
 
+[Q0] Number of MCUs (1~12)
+  [Q0-1] Enter number of MCUs (1~12): _
+
 [Q1] Vehicle arrival order at charging guns
   A) Sequential
   B) Random
@@ -732,6 +735,7 @@ Select [A/B]: _
   [Q4-2] Enter target SOC upper bound ({lower+1}~90): _
 
 === Parameter Summary ===
+Number of MCUs : 4
 Arrival order : Sequential / Random
 Arrival interval: Fixed 5 min / Random 3~8 min
 Initial SOC    : Fixed 30 / Random 20~50
