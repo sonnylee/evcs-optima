@@ -20,11 +20,19 @@ pip install -r requirements.txt
 
 The devcontainer is Node.js 20 + Python. `ANTHROPIC_API_KEY` is required as a devcontainer secret.
 
-> No build/test/lint commands are configured yet — this project is in the implementation phase. Add commands here as they are established.
+End-to-end check (all 14 scenarios, 4-MCU ring):
+
+```bash
+python3 demo_phase5.py   # writes CSV + boundary JSONL under associate/verify/scenarios/
+```
+
+> No formal lint/test suite yet. `demo_phase5.py` is the de-facto regression harness — expect every scenario to report `inconsistent=0  violations=0`.
 
 Reference EV profile for development/validation: **2024 Tesla Cybertruck Cyberbeast** (325 kW peak). Charging curve data: `associate/ev_curve_data.csv` (SPEC §15).
 
-## Planned Directory Structure
+Interactive runtime parameter setup follows SPEC §18 (`simulation/utils/interactive_prompt.py`): arrival order (sequential / random), arrival interval (fixed 1–15 min or random range), initial SOC (10–89, or range up to 90), target SOC (up to 90).
+
+## Directory Structure
 
 ```
 simulation/
@@ -34,9 +42,11 @@ simulation/
 ├── data/              # RelayMatrix, ModuleAssignment
 ├── communication/     # BorrowProtocol, ReturnProtocol
 ├── log/               # RelayEvent, RelayEventLog
-└── utils/             # Validator, ConfigLoader
+└── utils/             # ConfigLoader, interactive_prompt, schedule_builder
 
-associate/             # Reference data (e.g. ev_curve_data.csv — Tesla Cybertruck curve)
+associate/             # Reference data (ev_curve_data.csv — Tesla Cybertruck curve)
+associate/verify/      # Regression artifacts — per-scenario CSV + boundary JSONL
+demo_phase*.py         # Phase-by-phase demo runners (Phase 5 is the 14-scenario harness)
 ```
 
 ## Architecture
@@ -74,11 +84,12 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
        MCU1                   MCU2                     MCU3
 ```
 
-- Each MCU: 4 SMR Groups (50/75/75/50 kW), 2 Outputs, Bridge Relays at MCU boundaries
+- Each MCU: 4 SMR Groups (50/75/75/50 kW), 2 Outputs (O1↔G1, O2↔G4), Bridge Relays at MCU boundaries
 - **Bridge Relays** (cross-MCU boundary): `R1`, `R5`, `R9` (SPEC §2.2)
 - MCU2 = Local view; MCU1 and MCU3 = neighbors
 - Discrete power levels per MCU: 50 / 125 / 200 / 250 kW
 - Minimum guaranteed power to start charging: 125 kW
+- Stage-1 target is the **4-MCU ring** (MCU1↔MCU2↔MCU3↔MCU4↔MCU1); stage-2 scales to 1–12 MCUs (SPEC §2.2)
 
 ### Core Data Structures
 
@@ -96,6 +107,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 ### Key Business Logic Rules
 
+- **Local vs Absolute coordinates (SPEC §6 preamble)** — each MCU is autonomous and talks to others only via protocol. Group-increment/decrement is always reasoned in **local (relative) coordinates** where MCU1 = self, MCU0 = left neighbor, MCU2 = right neighbor. When the decision needs to cross a boundary, the relative index is converted to an **absolute** one (e.g. in a 4-MCU ring, self=MCU1 → left=MCU4, right=MCU2), and all protocol payloads carry **absolute** indices. This is what keeps the code MCU-count-agnostic (1–12 supported) without conditional branches.
 - **Borrow trigger**: `Present Power == Available Power` for N consecutive steps.
 - **Borrow steps (SPEC §6.1)**: 1) find anchor via Relay Matrix → 2) determine initial `[MIN, MAX]` around anchor → 3) expand **local-first** — never cross an MCU boundary while local Groups remain → 4) when local is exhausted, cross using the SPEC §2.2 priority: **right neighbor > left neighbor > both sides**.
 - **Return trigger**: `Available Power - Present Power >= 1 Group` for N consecutive steps.
@@ -108,7 +120,8 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 - **Conflict protocol (SPEC §6.3)** — two sides:
   - *Initiator* (new vehicle arrives): find anchor → determine initial interval → scan Module Assignment for occupied Groups → notify the holder to release.
   - *Responder* (receives release notice for `Gx`): find own anchor → if `anchor < Gx` return from MAX end, if `anchor > Gx` return from MIN end → switch relays.
-- **Ring addressing**: `prev = (self_idx - 1 + N) % N`, `next = (self_idx + 1 + N) % N`. The `+N` form is defensive for C-portability (avoids negative-modulo behavior); each MCU only needs its own index.
+- **Ring addressing (SPEC §7.1)**: `prev = (self_idx - 1 + N) % N`, `next = (self_idx + 1 + N) % N`. The `+N` form is defensive for C-portability (avoids negative-modulo behavior); each MCU only needs its own index. Hardware lives on a CAN bus (SPEC §7.2) — the formula maps directly to neighbor CAN IDs.
+- **Ring-wrap borrow (N ≥ 4)**: in ring topology, borrow may cross the wrap seam — e.g. M1.O1 (anchor G0) extending left reaches M4.G3 via M1.R1 (the M4↔M1 bridge). Internally `MCUControl` uses "virtual" group indices that may go below 0 or beyond `4N − 1`; `_wrap(g) = g mod (4N)` maps them back to physical groups (see `simulation/modules/mcu_control.py`). Linear topologies (N < 4) skip wrapping.
 
 ### Critical Constraints
 
@@ -134,7 +147,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 Acceptance target is the **14-scenario test matrix** in SPEC §16 (combinations of active Outputs across MCUs). Notation `(a,b,c)` = count of MCUs with 0 / 1 / 2 active Outputs respectively across the 4-MCU matrix.
 
-Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step | Time | Event | [per EV: Output ops, Relay ops] | [per MCU: O1, O2, R1–R4, AvailablePower, MaxRequiredPower]`.
+Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step | Time | Event | Outputs Ops | Relays Ops | [per MCU: O1, O2, R1–R4, per-EV Available Power / Max Require Power / SOC]`. Per-MCU relay columns: **R1 = left bridge** (= previous MCU's right bridge), **R2/R3/R4 = inter-group relays** (G0-G1 / G1-G2 / G2-G3) — see `simulation/environment/vision_output.py::_build_relay_labels`. Boundary-consistency logs land alongside the CSV as `*_boundary.jsonl`.
 
 ## Recommended Architecture
 
