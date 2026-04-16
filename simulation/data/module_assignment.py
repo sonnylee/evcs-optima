@@ -1,5 +1,7 @@
 from typing import Any
 
+from simulation.utils.topology import ring_distance
+
 
 class ModuleAssignment:
     """Tracks which Output owns which Groups.
@@ -25,16 +27,7 @@ class ModuleAssignment:
             out_base = mcu * 2
             for o in range(out_base, out_base + 2):
                 for other_mcu in range(num_mcus):
-                    if num_mcus >= 4:
-                        # Ring: distance wraps around
-                        distance = min(
-                            abs(other_mcu - mcu),
-                            num_mcus - abs(other_mcu - mcu),
-                        )
-                    else:
-                        # Linear: straight distance
-                        distance = abs(other_mcu - mcu)
-                    if distance > 1:
+                    if ring_distance(mcu, other_mcu, num_mcus) > 1:
                         g_base = other_mcu * 4
                         for g in range(g_base, g_base + 4):
                             self._matrix[o][g] = -1
@@ -70,6 +63,12 @@ class ModuleAssignment:
             if self._matrix[o][group_idx] == 1:
                 return o
         return None
+
+    def is_assignable(self, output_idx: int, group_idx: int) -> bool:
+        """True if this Output is physically wired to reach `group_idx` —
+        i.e. the matrix cell is NOT the -1 unreachable sentinel. Does not
+        check current ownership (see `assign_if_idle`)."""
+        return self._matrix[output_idx][group_idx] != -1
 
     def get_groups_for_output(self, output_idx: int) -> list[int]:
         return [g for g in range(self.num_groups) if self._matrix[output_idx][g] == 1]

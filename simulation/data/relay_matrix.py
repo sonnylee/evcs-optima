@@ -1,5 +1,7 @@
 from typing import Any
 
+from simulation.utils.topology import adjacent_pairs
+
 
 class RelayMatrix:
     """Relay adjacency matrix — defines physically legal connections.
@@ -35,16 +37,9 @@ class RelayMatrix:
             self._set_pair(base_o, base_g, 0)
             self._set_pair(base_o + 1, base_g + 3, 0)
 
-        # Cross-MCU bridges (separate from per-MCU loop)
-        if self.num_mcus >= 4:
-            # Ring topology: all MCUs bridge to next, including wrap-around
-            for mcu in range(self.num_mcus):
-                next_mcu = (mcu + 1) % self.num_mcus
-                self._set_pair(mcu * 4 + 3, next_mcu * 4, 0)
-        elif self.num_mcus > 1:
-            # Linear topology: bridges only between consecutive MCUs
-            for mcu in range(self.num_mcus - 1):
-                self._set_pair(mcu * 4 + 3, (mcu + 1) * 4, 0)
+        # Cross-MCU bridges: one per adjacent-MCU pair (ring wraps).
+        for left, right in adjacent_pairs(self.num_mcus):
+            self._set_pair(left * 4 + 3, right * 4, 0)
 
     def _set_pair(self, a: int, b: int, value: int) -> None:
         self._matrix[a][b] = value

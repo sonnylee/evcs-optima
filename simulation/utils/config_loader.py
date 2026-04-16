@@ -36,17 +36,6 @@ _CSV_PATH = os.path.join(
 )
 DEFAULT_VEHICLE_NAME = "2024 Tesla Cybertruck Cyberbeast (325 kW, optimized)"
 
-# Default EV charging curve (typical CCS profile) — fallback reference
-DEFAULT_SOC_POWER_CURVE: list[tuple[float, float]] = [
-    (0.0, 50.0),
-    (10.0, 100.0),
-    (20.0, 125.0),
-    (50.0, 125.0),
-    (80.0, 100.0),
-    (90.0, 50.0),
-    (100.0, 0.0),
-]
-
 
 class ConfigLoader:
 

@@ -25,6 +25,13 @@ from simulation.modules.vehicle import VehicleState
 # may close (gate power to the charging gun).
 MIN_START_POWER_KW = 125.0
 
+# SPEC §2.2: each REC BD (one per MCU) holds exactly 4 SMR Groups and 2 Outputs.
+# The anchor Groups are the ones physically wired to each Output: G0 for O0,
+# G3 for O1. Everything else is derived from these.
+GROUPS_PER_MCU = 4
+OUTPUTS_PER_MCU = 2
+ANCHOR_GROUP_LOCAL_IDX = (0, GROUPS_PER_MCU - 1)
+
 if TYPE_CHECKING:
     from simulation.data.module_assignment import ModuleAssignment
     from simulation.data.relay_matrix import RelayMatrix
@@ -61,6 +68,10 @@ class OutputPowerState:
     pending_output_relay_open: int = 0
     gun_live_ticks: int = 0
 
+    @property
+    def has_interval(self) -> bool:
+        return self.interval_min is not None and self.interval_max is not None
+
 
 class MCUControl(Actor, SimulationModule):
     """Business logic for one MCU. Actor for cross-MCU messaging."""
@@ -86,9 +97,9 @@ class MCUControl(Actor, SimulationModule):
         self._num_mcus = num_mcus
         self._consecutive_threshold = max(1, consecutive_threshold)
         self._step_index: int = 0
-        self._group_base: int = mcu_id * 4
-        self._output_base: int = mcu_id * 2
-        self._num_groups_total: int = 4 * num_mcus
+        self._group_base: int = mcu_id * GROUPS_PER_MCU
+        self._output_base: int = mcu_id * OUTPUTS_PER_MCU
+        self._num_groups_total: int = GROUPS_PER_MCU * num_mcus
         # SPEC §2.2: ring topology kicks in at 4+ MCUs, so inter-MCU
         # borrow/return may wrap across the num_groups_total boundary.
         self._ring_enabled: bool = num_mcus >= 4
@@ -98,9 +109,8 @@ class MCUControl(Actor, SimulationModule):
         self.right_neighbor: MCUControl | None = None
 
         self._output_states: list[OutputPowerState] = []
-        anchor_locals = [0, 3]
-        for i in range(2):
-            anchor_global = self._local_to_global(anchor_locals[i])
+        for i in range(OUTPUTS_PER_MCU):
+            anchor_global = self._local_to_global(ANCHOR_GROUP_LOCAL_IDX[i])
             state = OutputPowerState(
                 output_local_idx=i,
                 anchor_group_idx=anchor_global,
@@ -137,40 +147,16 @@ class MCUControl(Actor, SimulationModule):
     def _run_local_logic(self) -> None:
         for i, output in enumerate(self._board.outputs):
             state = self._output_states[i]
-            if output.connected_vehicle is None:
-                state.borrow_counter = 0
-                state.return_counter = 0
-                state.gun_live_ticks = 0
+            if self._pre_step_guard(state, output):
                 continue
-
-            if self._advance_relay_phases(state):
-                continue
-
-            vehicle = output.connected_vehicle
-            present = output.present_power_kw
-            available = output.available_power_kw
-
-            if (
-                present > 0
-                and abs(present - available) < 0.01
-                and vehicle.max_require_power_kw > available + 0.01
-            ):
-                state.borrow_counter += 1
-            else:
-                state.borrow_counter = 0
-
-            if state.borrow_counter >= self._consecutive_threshold:
+            # Snapshot pre-borrow available so the return decision uses the
+            # same reference value as the original inlined loop (see
+            # `_tick_return_condition`).
+            pre_available = output.available_power_kw
+            if self._tick_borrow_condition(state, output):
                 self._try_borrow_local(state)
                 state.borrow_counter = 0
-
-            edge_power = self._smallest_edge_group_power(state)
-            demand = vehicle.max_require_power_kw
-            if edge_power is not None and (available - demand) >= edge_power - 0.01:
-                state.return_counter += 1
-            else:
-                state.return_counter = 0
-
-            if state.return_counter >= self._consecutive_threshold:
+            if self._tick_return_condition(state, output, pre_available):
                 self._try_return_local(state)
                 state.return_counter = 0
 
@@ -181,44 +167,64 @@ class MCUControl(Actor, SimulationModule):
         try:
             for i, output in enumerate(self._board.outputs):
                 state = self._output_states[i]
-                if output.connected_vehicle is None:
-                    state.borrow_counter = 0
-                    state.return_counter = 0
-                    state.gun_live_ticks = 0
+                if self._pre_step_guard(state, output):
                     continue
-
-                if self._advance_relay_phases(state):
-                    continue
-
-                vehicle = output.connected_vehicle
-                present = output.present_power_kw
-                available = output.available_power_kw
-
-                if (
-                    present > 0
-                    and abs(present - available) < 0.01
-                    and vehicle.max_require_power_kw > available + 0.01
-                ):
-                    state.borrow_counter += 1
-                else:
-                    state.borrow_counter = 0
-
-                if state.borrow_counter >= self._consecutive_threshold:
+                pre_available = output.available_power_kw
+                if self._tick_borrow_condition(state, output):
                     await self._try_borrow_async(state)
                     state.borrow_counter = 0
-
-                edge_power = self._smallest_edge_group_power(state)
-                demand = vehicle.max_require_power_kw
-                if edge_power is not None and (available - demand) >= edge_power - 0.01:
-                    state.return_counter += 1
-                else:
-                    state.return_counter = 0
-
-                if state.return_counter >= self._consecutive_threshold:
+                if self._tick_return_condition(state, output, pre_available):
                     await self._try_return_async(state)
                     state.return_counter = 0
         finally:
             tick.done.set()
+
+    # ── Per-step decision helpers (shared by sync + async paths) ──────
+
+    def _pre_step_guard(self, state: OutputPowerState, output: Any) -> bool:
+        """Return True if the per-tick borrow/return loop should skip this
+        output: either no vehicle is connected, or a relay-phase transition
+        is in flight."""
+        if output.connected_vehicle is None:
+            state.borrow_counter = 0
+            state.return_counter = 0
+            state.gun_live_ticks = 0
+            return True
+        return self._advance_relay_phases(state)
+
+    def _tick_borrow_condition(
+        self, state: OutputPowerState, output: Any
+    ) -> bool:
+        """SPEC §6.1 trigger: Present ≈ Available AND demand exceeds Available
+        for `_consecutive_threshold` ticks. Updates `borrow_counter` in place,
+        returns True iff the threshold was hit this tick."""
+        vehicle = output.connected_vehicle
+        present = output.present_power_kw
+        available = output.available_power_kw
+        if (
+            present > 0
+            and abs(present - available) < 0.01
+            and vehicle.max_require_power_kw > available + 0.01
+        ):
+            state.borrow_counter += 1
+        else:
+            state.borrow_counter = 0
+        return state.borrow_counter >= self._consecutive_threshold
+
+    def _tick_return_condition(
+        self, state: OutputPowerState, output: Any, pre_available: float
+    ) -> bool:
+        """SPEC §6.2 trigger: (Available − demand) ≥ smallest edge Group's
+        power for `_consecutive_threshold` ticks. `pre_available` is the
+        pre-borrow snapshot — preserves historical behavior where a borrow
+        on the same tick does NOT immediately enable a return."""
+        edge_power = self._smallest_edge_group_power(state)
+        demand = output.connected_vehicle.max_require_power_kw
+        if edge_power is not None and (pre_available - demand) >= edge_power - 0.01:
+            state.return_counter += 1
+        else:
+            state.return_counter = 0
+        return state.return_counter >= self._consecutive_threshold
 
     # ── Borrow / Return (local only) ─────────────────────────────────
 
@@ -248,11 +254,7 @@ class MCUControl(Actor, SimulationModule):
         # Cross-MCU: determine which neighbor owns the target group.
         # `target` may be virtual (wrap across ring edge); dispatch on physical.
         target_phys = self._wrap(target)
-        neighbor_mcu = target_phys // 4
-        if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
-            neighbor = self.right_neighbor
-        else:
-            neighbor = self.left_neighbor
+        neighbor = self._get_neighbor_for_group(target_phys)
 
         output_idx = self._output_base + state.output_local_idx
         granted = await send_borrow_request(
@@ -272,11 +274,7 @@ class MCUControl(Actor, SimulationModule):
 
         if not self._is_local_group(target):
             target_phys = self._wrap(target)
-            neighbor_mcu = target_phys // 4
-            if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
-                neighbor = self.right_neighbor
-            else:
-                neighbor = self.left_neighbor
+            neighbor = self._get_neighbor_for_group(target_phys)
             await send_return_notify(neighbor, self._mcu_id, target_phys)
 
         self._apply_return(state, target)
@@ -289,7 +287,7 @@ class MCUControl(Actor, SimulationModule):
     ) -> None:
         """`target` may be a virtual index (out of [0, num_groups)) for ring
         wrap; physical index is used when talking to ModuleAssignment."""
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return
         output_idx = self._output_base + state.output_local_idx
         target_phys = self._wrap(target)
@@ -305,7 +303,7 @@ class MCUControl(Actor, SimulationModule):
         self._sync_output(state.output_local_idx)
 
     def _apply_return(self, state: OutputPowerState, target: int) -> None:
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return
         if target == state.interval_min:
             state.interval_min = target + 1
@@ -340,7 +338,7 @@ class MCUControl(Actor, SimulationModule):
             msg.response.set_result(True)
             return
         local_out = owner - self._output_base
-        if 0 <= local_out < 2:
+        if 0 <= local_out < OUTPUTS_PER_MCU:
             self._force_return_group(local_out, msg.group_idx)
         msg.response.set_result(self._ma.get_owner(msg.group_idx) is None)
 
@@ -419,8 +417,8 @@ class MCUControl(Actor, SimulationModule):
             owner = self._ma.get_owner(g)
             if owner is None or owner == self._output_base + output_local_idx:
                 continue
-            owner_mcu_id = owner // 2
-            other_local = owner - 2 * owner_mcu_id
+            owner_mcu_id = owner // OUTPUTS_PER_MCU
+            other_local = owner - OUTPUTS_PER_MCU * owner_mcu_id
             if owner_mcu_id == self._mcu_id:
                 self._force_return_group(other_local, g)
             else:
@@ -444,8 +442,8 @@ class MCUControl(Actor, SimulationModule):
             if owner is None or owner == my_idx:
                 continue
             owner_state = None
-            owner_mcu_id = owner // 2
-            owner_local = owner - 2 * owner_mcu_id
+            owner_mcu_id = owner // OUTPUTS_PER_MCU
+            owner_local = owner - OUTPUTS_PER_MCU * owner_mcu_id
             if owner_mcu_id == self._mcu_id:
                 owner_state = self._output_states[owner_local]
             else:
@@ -496,7 +494,7 @@ class MCUControl(Actor, SimulationModule):
         """Open inter-group / bridge relays uniquely needed by the departing
         output's interval. Preserve relays still needed by the other local
         output (or by foreign outputs borrowing our territory)."""
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return
         departing = set(self._compute_required_relays(
             state.output_local_idx, state.interval_min, state.interval_max,
@@ -513,12 +511,12 @@ class MCUControl(Actor, SimulationModule):
             ))
 
         foreign_seen: set[int] = set()
-        for g in range(self._group_base, self._group_base + 4):
+        for g in range(self._group_base, self._group_base + GROUPS_PER_MCU):
             owner = self._ma.get_owner(g)
             if owner is None:
                 continue
             local_out = owner - self._output_base
-            if 0 <= local_out < 2:
+            if 0 <= local_out < OUTPUTS_PER_MCU:
                 continue
             if owner in foreign_seen:
                 continue
@@ -532,7 +530,10 @@ class MCUControl(Actor, SimulationModule):
             ):
                 still_needed.add(r)
 
-        for r in departing - still_needed:
+        # Sort by relay_id so the RelayEventLog (and resulting CSV "Relays Ops"
+        # column) is deterministic across runs — set iteration order depends on
+        # object hash, which varies between Python processes.
+        for r in sorted(departing - still_needed, key=lambda x: x.relay_id):
             if r.state == RelayState.CLOSED:
                 r.switch(self._step_index)
 
@@ -574,7 +575,7 @@ class MCUControl(Actor, SimulationModule):
         target's virtual position relative to the anchor, not by comparing
         physical indices."""
         state = self._output_states[other_local_idx]
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return
         output_idx = self._output_base + other_local_idx
 
@@ -631,7 +632,7 @@ class MCUControl(Actor, SimulationModule):
         ring topology); callers should wrap to a physical index when
         indexing into ModuleAssignment.
         """
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return None
         output_idx = self._output_base + state.output_local_idx
         right_v = state.interval_max + 1
@@ -658,7 +659,7 @@ class MCUControl(Actor, SimulationModule):
         self, state: OutputPowerState, prefer_cross_mcu: bool
     ) -> int | None:
         """Anchor returned last. Prefer cross-MCU edges when requested."""
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             return None
         if state.interval_min == state.interval_max:
             return None
@@ -691,7 +692,7 @@ class MCUControl(Actor, SimulationModule):
         # target is by definition cross-MCU.
         if not allow_cross_mcu and not self._is_local_group(global_group_idx):
             return False
-        if self._ma._matrix[output_idx][phys] == -1:
+        if not self._ma.is_assignable(output_idx, phys):
             return False
         if self._ma.get_owner(phys) is not None:
             return False
@@ -719,12 +720,12 @@ class MCUControl(Actor, SimulationModule):
         # each foreign output's virtual span so ring-wrapped intervals aren't
         # flattened by min()/max() on the physical group set.
         foreign_seen: set[int] = set()
-        for g in range(self._group_base, self._group_base + 4):
+        for g in range(self._group_base, self._group_base + GROUPS_PER_MCU):
             owner = self._ma.get_owner(g)
             if owner is None:
                 continue
             local_out = owner - self._output_base
-            if 0 <= local_out < 2:
+            if 0 <= local_out < OUTPUTS_PER_MCU:
                 continue  # already handled via local interval
             if owner in foreign_seen:
                 continue
@@ -753,13 +754,17 @@ class MCUControl(Actor, SimulationModule):
                 r.switch(self._step_index)
         # Close inter-group / bridge relays first so the 125 kW path is
         # formed before the Output relay closes (SPEC §11, §17).
+        # Sort by relay_id so the close order (and resulting CSV "Relays Ops"
+        # column) is deterministic — set iteration order depends on object
+        # hash, which varies between Python processes.
         output_relay_set = set(self._board.output_relays)
-        for r in needed:
+        needed_sorted = sorted(needed, key=lambda x: x.relay_id)
+        for r in needed_sorted:
             if r in output_relay_set:
                 continue
             if r.state == RelayState.OPEN:
                 r.switch(self._step_index)
-        for r in needed:
+        for r in needed_sorted:
             if r not in output_relay_set:
                 continue
             if r.state == RelayState.OPEN:
@@ -789,9 +794,9 @@ class MCUControl(Actor, SimulationModule):
             if gb <= p <= gb + 2 and pn == p + 1:
                 relays.append(self._board.inter_group_relays[p - gb])
                 continue
-            # Right bridge I own (my G3 → next MCU's G0).
-            if self._board.right_bridge_relay is not None and p == gb + 3:
-                next_g0 = (gb + 4) % N if self._ring_enabled else gb + 4
+            # Right bridge I own (my last local G → next MCU's first local G).
+            if self._board.right_bridge_relay is not None and p == gb + GROUPS_PER_MCU - 1:
+                next_g0 = (gb + GROUPS_PER_MCU) % N if self._ring_enabled else gb + GROUPS_PER_MCU
                 if pn == next_g0:
                     relays.append(self._board.right_bridge_relay)
                     continue
@@ -812,7 +817,7 @@ class MCUControl(Actor, SimulationModule):
         state = self._output_states[output_local_idx]
         output = self._board.outputs[output_local_idx]
 
-        if state.interval_min is None or state.interval_max is None:
+        if not state.has_interval:
             output.groups = [output.anchor_group]
             output.available_power_kw = 0.0
             output._group_indices = []
@@ -825,8 +830,8 @@ class MCUControl(Actor, SimulationModule):
         total_power = 0.0
         for g_virtual in range(state.interval_min, state.interval_max + 1):
             g_global = self._wrap(g_virtual)
-            mcu = g_global // 4
-            local = g_global % 4
+            mcu = g_global // GROUPS_PER_MCU
+            local = g_global % GROUPS_PER_MCU
             if self._station is not None and 0 <= mcu < len(self._station.boards):
                 grp = self._station.boards[mcu].groups[local]
             elif mcu == self._mcu_id:
@@ -903,8 +908,8 @@ class MCUControl(Actor, SimulationModule):
         Only valid for outputs on THIS MCU or an adjacent one — cross-MCU
         borrow is restricted to neighbors per SPEC §11 (Ring Topology).
         """
-        owner_mcu_id = foreign_output_idx // 2
-        owner_local = foreign_output_idx - owner_mcu_id * 2
+        owner_mcu_id = foreign_output_idx // OUTPUTS_PER_MCU
+        owner_local = foreign_output_idx - owner_mcu_id * OUTPUTS_PER_MCU
         mcu = None
         if owner_mcu_id == self._mcu_id:
             mcu = self
@@ -915,7 +920,7 @@ class MCUControl(Actor, SimulationModule):
         if not (0 <= owner_local < len(mcu._output_states)):
             return None
         s = mcu._output_states[owner_local]
-        if s.interval_min is None or s.interval_max is None:
+        if not s.has_interval:
             return None
         return (s.interval_min, s.interval_max)
 
@@ -928,17 +933,27 @@ class MCUControl(Actor, SimulationModule):
             return self.left_neighbor
         return None
 
+    def _get_neighbor_for_group(self, group_phys: int) -> MCUControl | None:
+        """Pick the neighbor MCU that owns `group_phys` for borrow/return
+        dispatch. Non-adjacent groups fall through to `left_neighbor` — those
+        cases should already be filtered by `_can_assign`'s reachability check
+        (SPEC §2.2: borrow is restricted to immediate neighbors)."""
+        neighbor_mcu = group_phys // GROUPS_PER_MCU
+        if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
+            return self.right_neighbor
+        return self.left_neighbor
+
     def _is_local_group(self, global_idx: int) -> bool:
         local = global_idx - self._group_base
-        return 0 <= local < 4
+        return 0 <= local < GROUPS_PER_MCU
 
     def _smallest_edge_group_power(self, state: OutputPowerState) -> float | None:
         target = self._find_shrink_target(state, prefer_cross_mcu=False)
         if target is None:
             return None
         target_phys = self._wrap(target)
-        mcu = target_phys // 4
-        local = target_phys % 4
+        mcu = target_phys // GROUPS_PER_MCU
+        local = target_phys % GROUPS_PER_MCU
         if self._station is not None and 0 <= mcu < len(self._station.boards):
             return self._station.boards[mcu].groups[local].total_power_kw
         if self._is_local_group(target):

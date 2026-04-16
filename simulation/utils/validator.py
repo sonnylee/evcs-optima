@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from simulation.utils.topology import adjacent_pairs
+
 if TYPE_CHECKING:
     from simulation.hardware.charging_station import ChargingStation
 
@@ -50,13 +52,7 @@ class Validator:
         ma = station.module_assignment
         entries: list[dict[str, Any]] = []
 
-        # Iterate boundaries: for linear N<4, pairs (0,1)..(N-2,N-1);
-        # for ring N>=4 also include (N-1, 0).
-        pairs: list[tuple[int, int]] = [(i, i + 1) for i in range(N - 1)]
-        if N >= 4:
-            pairs.append((N - 1, 0))
-
-        for left, right in pairs:
+        for left, right in adjacent_pairs(N):
             conflicts: list[dict[str, Any]] = []
 
             # Bridge relay: must be a single shared state; both MCUs observe it.
