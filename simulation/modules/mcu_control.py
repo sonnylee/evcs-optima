@@ -948,7 +948,7 @@ class MCUControl(Actor, SimulationModule):
         return 0 <= local < GROUPS_PER_MCU
 
     def _smallest_edge_group_power(self, state: OutputPowerState) -> float | None:
-        target = self._find_shrink_target(state, prefer_cross_mcu=False)
+        target = self._find_shrink_target(state, prefer_cross_mcu=True)
         if target is None:
             return None
         target_phys = self._wrap(target)

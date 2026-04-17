@@ -179,7 +179,10 @@ class VisionOutput:
             # MCUm's R1 column maps to MCU(m-1)_BR to match the label side
             # (_build_relay_labels), which names every bridge after the right-hand MCU.
             if m == 0:
-                out.append("OFF")
+                if self.num_mcus >= 3:
+                    out.append(row["relay_state"].get(f"MCU{self.num_mcus-1}_BR", "OFF"))
+                else:
+                    out.append("OFF")
             else:
                 out.append(row["relay_state"].get(f"MCU{m-1}_BR", "OFF"))
             out.append(row["relay_state"].get(f"{prefix}_R01", "OFF"))

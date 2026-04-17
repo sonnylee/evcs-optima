@@ -5,6 +5,16 @@
 
 ---
 
+## 變更紀錄
+
+| 版本 | 日期 | 變更說明 |
+|------|------|----------|
+| v1.0 | 2026-04-16 | 初版規格建立 |
+| v1.1 | 2026-04-17 | TC-TOPO-01/03 修正：`is_ring` threshold 改為 `>= 3`（3 MCU 為環形） |
+| v1.2 | 2026-04-17 | 新增 6 個原 0% 覆蓋模組的 TC（SimulationEngine / VisionOutput / Actor / TimeController / TrafficSimulator / VehicleGenerator）；補充已知 Bug TC（VisionOutput M1.R1、SimulationEngine 3-MCU 鄰居連接） |
+
+---
+
 ## 1. 測試策略總覽
 
 ### 1.1 測試層次
@@ -13,8 +23,9 @@
 |------|------|----------|
 | **Unit Test** | 單一 class / 函式，所有外部依賴皆 mock | 邏輯正確性、邊界條件 |
 | **Integration Test** | 跨模組協作（mcu_control ↔ module_assignment ↔ relay） | 協議正確性、資料一致性 |
+| **Scenario Test** | 完整 Simulation Engine 多步驟執行 | End-to-End 行為驗證 |
 
-> 本規格書聚焦於 **Unit Test** 與部分 **Integration Test**
+> 本規格書聚焦於 **Unit Test** 與部分 **Integration Test**，Scenario Test 另立文件。
 
 ### 1.2 測試框架與工具
 
@@ -23,13 +34,18 @@
 | `pytest` | 主測試框架 |
 | `pytest-asyncio` | 非同步 Actor 協議測試 |
 | `unittest.mock` (`MagicMock`, `AsyncMock`) | 依賴隔離 |
-| `pytest-cov` | 覆蓋率報告（目標：核心模組 ≥ 80%） |
+| `pytest-cov` | 覆蓋率報告（目標：核心模組 ≥ 90%） |
 
 ### 1.3 目錄結構（建議）
 
 ```
 tests/
+├── conftest.py
 ├── unit/
+│   ├── environment/
+│   │   ├── test_actor_and_time_controller.py   ✅ 新增
+│   │   ├── test_simulation_engine.py           ✅ 新增
+│   │   └── test_vision_output.py               ✅ 新增
 │   ├── hardware/
 │   │   ├── test_relay.py
 │   │   ├── test_smr_group.py
@@ -43,6 +59,7 @@ tests/
 │   ├── log/
 │   │   └── test_relay_event_log.py
 │   └── modules/
+│       ├── test_traffic_and_generator.py       ✅ 新增
 │       ├── test_mcu_control_local.py
 │       ├── test_mcu_control_borrow_return.py
 │       ├── test_mcu_control_relay_phase.py
@@ -51,7 +68,7 @@ tests/
 │   ├── test_borrow_protocol.py
 │   ├── test_return_protocol.py
 │   └── test_cross_mcu_relay_sync.py
-└── conftest.py
+└── pytest.ini
 ```
 
 ---
@@ -150,15 +167,15 @@ def make_vehicle(
 | 單 MCU | 1 | `False` |
 | 2 MCU（線性） | 2 | `False` |
 | 3 MCU（環形邊界） | 3 | `True` |
-| 4 MCU（環形邊界） | 4 | `True` |
-| 8 MCU （環形邊界）| 8 | `True` |
+| 4 MCU | 4 | `True` |
+| 8 MCU | 8 | `True` |
 
 #### TC-TOPO-02：`adjacent_pairs()`
 
 | Case | 輸入 | 期望結果 |
 |------|------|----------|
 | 1 MCU | 1 | `[]` |
-| 2 MCU（線性）| 2 | `[(0,1)]` |
+| 2 MCU | 2 | `[(0,1)]` |
 | 3 MCU（環形） | 3 | `[(0,1),(1,2),(2,0)]` |
 | 4 MCU（環形） | 4 | `[(0,1),(1,2),(2,3),(3,0)]` |
 
@@ -166,12 +183,11 @@ def make_vehicle(
 
 | Case | a, b, num_mcus | 期望距離 |
 |------|----------------|----------|
-| 同一節點 | 0, 0, 3 | 0 |
-| 相鄰（環形） | 0, 1, 3 | 1 |
-| 非相鄰（環形，繞後較短） | 0, 2, 3 | 1 |
-| 相鄰（環形） | 0, 3, 4 | 1 |
-| 正反兩路等長（環形） | 0, 2, 4 | 2 |
-| 線性相鄰（2 MCU） | 0, 1, 2 | 1 |
+| 同一節點 | 0, 0, 4 | 0 |
+| 相鄰（線性） | 0, 1, 3 | 1 |
+| 對角（環形取捷徑） | 0, 3, 4 | 1 |
+| 對角（環形正常路徑） | 0, 2, 4 | 2 |
+| 非環形不走捷徑 | 0, 2, 3 | 2 |
 
 ---
 
@@ -854,26 +870,35 @@ MCU0 借入 G4（MCU1 領域邊界）
 
 ## 5. 邊界條件與負面測試
 
-### 5.1 Ring Wrap 邊界
+### 5.1 Relay 熱切換保護
+
+> SPEC §11：DC relay 禁止在電流下切換（5A 閾值）。
 
 | TC | 場景 | 驗證 |
 |----|------|------|
-| TC-NEG-01 | 4-MCU 環形，MCU3 借入 MCU0 的 G0（wrap） | `_wrap(16) == 0`，interval=[15, 16]，phys target=0 |
-| TC-NEG-02 | `_virtual_interval_contains` 在 ring 模式下正確判斷 | g=0, vmin=15, vmax=16 → True |
+| TC-NEG-01 | 驗證 `Relay.switch()` 不自行檢查電流（業務邏輯由 MCUControl 保護） | `switch()` 無電流參數，不拋錯 |
+| TC-NEG-02 | `pending_output_relay_close` 確保 inter-group relay 先閉合 | 見 TC-PHASE-01/02 |
 
-### 5.2 Interval 邊界保護
-
-| TC | 場景 | 驗證 |
-|----|------|------|
-| TC-NEG-03 | interval 擴張到覆蓋全 ring（num_groups 個） | span_guard 阻止，right_v 設 None |
-| TC-NEG-04 | `_find_shrink_target` interval 已為最小（min==max） | 回傳 None |
-
-### 5.3 ModuleAssignment 雙重持有防護
+### 5.2 Ring Wrap 邊界
 
 | TC | 場景 | 驗證 |
 |----|------|------|
-| TC-NEG-05 | 連續呼叫兩次 `assign_if_idle(0, g)` | 第 2 次回傳 False，不拋錯 |
-| TC-NEG-06 | `assign()` 已被他人持有 → AssertionError | pytest.raises(AssertionError) |
+| TC-NEG-03 | 4-MCU 環形，MCU3 借入 MCU0 的 G0（wrap） | `_wrap(16) == 0`，interval=[15, 16]，phys target=0 |
+| TC-NEG-04 | `_virtual_interval_contains` 在 ring 模式下正確判斷 | g=0, vmin=15, vmax=16 → True |
+
+### 5.3 Interval 邊界保護
+
+| TC | 場景 | 驗證 |
+|----|------|------|
+| TC-NEG-05 | interval 擴張到覆蓋全 ring（num_groups 個） | span_guard 阻止，right_v 設 None |
+| TC-NEG-06 | `_find_shrink_target` interval 已為最小（min==max） | 回傳 None |
+
+### 5.4 ModuleAssignment 雙重持有防護
+
+| TC | 場景 | 驗證 |
+|----|------|------|
+| TC-NEG-07 | 連續呼叫兩次 `assign_if_idle(0, g)` | 第 2 次回傳 False，不拋錯 |
+| TC-NEG-08 | `assign()` 已被他人持有 → AssertionError | pytest.raises(AssertionError) |
 
 ---
 
