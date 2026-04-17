@@ -30,7 +30,7 @@ python3 demo_phase5.py   # writes CSV + boundary JSONL under associate/verify/sc
 
 Reference EV profile for development/validation: **2024 Tesla Cybertruck Cyberbeast** (325 kW peak). Charging curve data: `associate/ev_curve_data.csv` (SPEC §15).
 
-Interactive runtime parameter setup follows SPEC §18 (`simulation/utils/interactive_prompt.py`): arrival order (sequential / random), arrival interval (fixed 1–15 min or random range), initial SOC (10–89, or range up to 90), target SOC (up to 90).
+Interactive runtime parameter setup follows SPEC §18 (`simulation/utils/interactive_prompt.py`): number of MCUs (1–12), arrival order (sequential / random), arrival interval (fixed 1–15 min or random range), initial SOC (10–89, or range up to 90), target SOC (up to 90).
 
 ## Directory Structure
 
@@ -64,7 +64,7 @@ All modules receive `step(dt)` and return `get_status()`. No central coordinator
 | Module | Role |
 |---|---|
 | `Vehicle` | Holds SOC curve, updates SOC each dt, negotiates Present Power with MCU |
-| `TrafficSimulator` | Decides *whether* to spawn a vehicle each step (arrival rate) and routes it to an Output |
+| `TrafficSimulator` | Decides *whether* to spawn a vehicle each step (arrival rate) and routes it to an Output; does not intervene after connection |
 | `VehicleGenerator` | Instantiates `Vehicle` objects from `vehicle_profiles`; called by `TrafficSimulator` |
 | `MCUControl` | Business logic core — borrow/return power decisions, relay switching commands |
 | `ChargingStation` | Global container (shell only, no logic) |
@@ -89,6 +89,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 - MCU2 = Local view; MCU1 and MCU3 = neighbors
 - Discrete power levels per MCU: 50 / 125 / 200 / 250 kW
 - Minimum guaranteed power to start charging: 125 kW
+- **Topology rules (SPEC §2.2)**: `N == 1` → single MCU, no Bridge Relay; `N == 2` → linear, one bridge (MCU1↔MCU2); `N >= 3` → ring (head↔tail close the loop)
 - Stage-1 target is the **4-MCU ring** (MCU1↔MCU2↔MCU3↔MCU4↔MCU1); stage-2 scales to 1–12 MCUs (SPEC §2.2)
 
 ### Core Data Structures
@@ -152,3 +153,7 @@ Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step 
 ## Recommended Architecture
 
 Recommended (optional, per SPEC §14): **asyncio + Queue (Actor Model)** — each entity (EV, Output, MCU) has its own `asyncio.Queue` and processes messages independently. Use **TinyDB (in-memory)** with JSON to store simulation state snapshots. Keep this stack in mind from Phase 1 onward.
+
+## Testing
+
+See `associate/TEST-SPEC.md` for the full test specification (SPEC §19).

@@ -2,5 +2,5 @@ __pycache__/
 *.pyc
 .env
 .vscode/
-verify/scenarios/
-verify/interactive/
+associate/verify/scenarios/
+associate/verify/interactive/

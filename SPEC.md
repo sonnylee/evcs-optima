@@ -749,6 +749,10 @@ Target SOC     : Fixed 80 / Random 60~80
 
 Confirm and run? [Y/N]: _
 
+## 19 Testing 規格
+
+See @associate/TEST-SPEC.md for full test specification.
+
 ## 附錄 A：參考連結
 
 - 車輛與充電站交握流程圖：`https://mermaid.ai/d/2bb448cb-38b7-473b-9239-5f025ef1417c`
