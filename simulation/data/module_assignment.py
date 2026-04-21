@@ -48,20 +48,31 @@ class ModuleAssignment:
         self._init_constraints()
 
     def _init_constraints(self) -> None:
-        """Mark cells as -1 where the GLOBAL ring distance between the
-        Output's MCU and the Group's MCU exceeds 1 (SPEC §2.2: borrow only
-        between physically adjacent MCUs)."""
+        """Mark cells as -1 where the Output cannot reach the Group.
+
+        Two cases (SPEC §2.2):
+          1. **Ghost slot** — in linear topology (``N == 2``) one side of
+             the 3-MCU window has no neighbor (``slot_to_mcu`` contains
+             ``None``). Every cell whose Output-slot or Group-slot is the
+             ghost slot is physically nonexistent → -1.
+          2. **Non-adjacent MCUs** — borrow is restricted to immediate
+             neighbors, so any (Output, Group) pair whose owning MCUs are
+             more than one hop apart in the global ring → -1.
+        """
         if self.num_mcus <= 1:
-            return  # everything reachable
+            return  # everything reachable in single-MCU case
         for o_slot, o_mcu in enumerate(self._slot_to_mcu):
-            if o_mcu is None:
-                continue
             for g_slot, g_mcu in enumerate(self._slot_to_mcu):
-                if g_mcu is None:
-                    continue
-                if ring_distance(o_mcu, g_mcu, self.num_mcus) > 1:
-                    o_base = o_slot * OUTPUTS_PER_MCU
-                    g_base = g_slot * GROUPS_PER_MCU
+                o_base = o_slot * OUTPUTS_PER_MCU
+                g_base = g_slot * GROUPS_PER_MCU
+                # Ghost slot (linear-topology edge, SPEC §2.2 N==2 case):
+                # no real MCU on that side → cell cannot exist.
+                is_ghost = o_mcu is None or g_mcu is None
+                is_far = (
+                    not is_ghost
+                    and ring_distance(o_mcu, g_mcu, self.num_mcus) > 1
+                )
+                if is_ghost or is_far:
                     for o_off in range(OUTPUTS_PER_MCU):
                         for g_off in range(GROUPS_PER_MCU):
                             self._matrix[o_base + o_off][g_base + g_off] = -1
