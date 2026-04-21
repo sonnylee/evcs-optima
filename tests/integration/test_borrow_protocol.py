@@ -1,9 +1,14 @@
-"""TC-INT-BR-01 to TC-INT-BR-04: Cross-MCU borrow protocol integration tests."""
+"""TC-INT-BR-01 to TC-INT-BR-04: Cross-MCU borrow protocol integration tests.
+
+Per SPEC §10, each MCU owns its own ``ModuleAssignment``; helpers from
+``conftest`` populate every MCU's mirror so the test setup mirrors what
+the protocol layer would do at runtime.
+"""
 
 import asyncio
 import pytest
 from simulation.communication.messages import Stop
-from tests.conftest import make_vehicle
+from tests.conftest import assign_across_station, get_owner_anywhere
 
 
 # TC-INT-BR-01: MCU0 borrows G4 from MCU1 (granted)
@@ -20,13 +25,15 @@ async def test_cross_mcu_borrow_granted(make_3mcu_system):
         state.interval_min = 0
         state.interval_max = 3
         for g in range(4):
-            station.module_assignment.assign_if_idle(0, g)
+            assign_across_station(station, 0, g)
         mcu0._apply_global_relay_state()
 
         # Attempt cross-MCU borrow of G4 (MCU1's territory)
         await mcu0._try_borrow_async(state)
 
-        assert station.module_assignment.get_owner(4) == 0  # MCU0's O0 owns G4
+        # MCU0's O0 (abs 0) should now own G4 in MCU1's MA AND in MCU0's mirror
+        assert station.boards[1].module_assignment.get_owner(4) == 0
+        assert station.boards[0].module_assignment.get_owner(4) == 0
         assert state.interval_max == 4
     finally:
         mcu1.stop()
@@ -47,19 +54,19 @@ async def test_cross_mcu_borrow_denied(make_3mcu_system):
     task1 = asyncio.create_task(mcu1.run())
     try:
         # Pre-assign G4 to MCU1's O2 (output_idx=2)
-        station.module_assignment.assign_if_idle(2, 4)
+        assign_across_station(station, 2, 4)
 
         state = mcu0._output_states[0]
         state.interval_min = 0
         state.interval_max = 3
         for g in range(4):
-            station.module_assignment.assign_if_idle(0, g)
+            assign_across_station(station, 0, g)
         mcu0._apply_global_relay_state()
 
         await mcu0._try_borrow_async(state)
 
-        # G4 should still be owned by output 2, not output 0
-        assert station.module_assignment.get_owner(4) == 2
+        # G4 should still be owned by output 2 in MCU1's authoritative MA.
+        assert station.boards[1].module_assignment.get_owner(4) == 2
         assert state.interval_max == 3  # unchanged
     finally:
         mcu1.stop()
@@ -84,7 +91,7 @@ async def test_cross_mcu_return(make_3mcu_system):
         state.interval_min = 0
         state.interval_max = 3
         for g in range(4):
-            station.module_assignment.assign_if_idle(0, g)
+            assign_across_station(station, 0, g)
         mcu0._apply_global_relay_state()
 
         await mcu0._try_borrow_async(state)
@@ -93,7 +100,7 @@ async def test_cross_mcu_return(make_3mcu_system):
         # Now return: set up conditions for return (prefer cross-MCU)
         await mcu0._try_return_async(state)
 
-        assert station.module_assignment.get_owner(4) is None
+        assert get_owner_anywhere(station, 4) is None
         assert state.interval_max == 3
     finally:
         mcu1.stop()
@@ -117,7 +124,7 @@ async def test_sync_foreign_relays(make_3mcu_system):
         state.interval_min = 0
         state.interval_max = 3
         for g in range(4):
-            station.module_assignment.assign_if_idle(0, g)
+            assign_across_station(station, 0, g)
         mcu0._apply_global_relay_state()
 
         # Borrow G4 — triggers _sync_foreign_relays on MCU1

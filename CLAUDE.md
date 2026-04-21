@@ -36,13 +36,13 @@ Interactive runtime parameter setup follows SPEC §18 (`simulation/utils/interac
 
 ```
 simulation/
-├── environment/       # SimulationEngine, TimeController, VisionOutput
+├── environment/       # SimulationEngine, TimeController, VisionOutput, Actor (SPEC §14 base)
 ├── modules/           # Vehicle, TrafficSimulator, MCUControl, VehicleGenerator
 ├── hardware/          # ChargingStation, RectifierBoard, SMRGroup, SMR, Relay, Output
 ├── data/              # RelayMatrix, ModuleAssignment
-├── communication/     # BorrowProtocol, ReturnProtocol
+├── communication/     # BorrowProtocol, ReturnProtocol, messages
 ├── log/               # RelayEvent, RelayEventLog
-└── utils/             # ConfigLoader, interactive_prompt, schedule_builder
+└── utils/             # ConfigLoader, validator, topology, interactive_prompt, schedule_builder
 
 associate/             # Reference data (ev_curve_data.csv — Tesla Cybertruck curve)
 associate/verify/      # Regression artifacts — per-scenario CSV + boundary JSONL
@@ -94,7 +94,9 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 ### Core Data Structures
 
-**Relay Matrix** (18×18 symmetric, 3-MCU): Defines physically legal connections.
+**Per-MCU ownership (SPEC §10)**: each MCU holds its **own** `RelayMatrix` and `ModuleAssignment` instance — they are *not* shared global structures. Cross-MCU consistency comes from protocol exchange (SPEC §6.3, §7), not from a shared table.
+
+**Relay Matrix** (18×18 symmetric in the 3-MCU dev view): Defines physically legal connections.
 - `0` = relay open, `1` = relay closed, `-1` = no physical wire (forever illegal)
 - Node indices: Groups occupy `0–11`, Outputs occupy `12–17`.
 - Per-MCU view: `LOCAL = 1`, neighbors `= 0, 2` (SPEC §5.1).
@@ -148,7 +150,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 
 Acceptance target is the **14-scenario test matrix** in SPEC §16 (combinations of active Outputs across MCUs). Notation `(a,b,c)` = count of MCUs with 0 / 1 / 2 active Outputs respectively across the 4-MCU matrix.
 
-Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step | Time | Event | Outputs Ops | Relays Ops | [per MCU: O1, O2, R1–R4, per-EV Available Power / Max Require Power / SOC]`. Per-MCU relay columns: **R1 = left bridge** (= previous MCU's right bridge), **R2/R3/R4 = inter-group relays** (G0-G1 / G1-G2 / G2-G3) — see `simulation/environment/vision_output.py::_build_relay_labels`. Boundary-consistency logs land alongside the CSV as `*_boundary.jsonl`.
+Trace output must match the **CSV format** defined in SPEC §17. Columns: `Step | Time | Event | Outputs Ops | Relays Ops | [per MCU: O1, O2, R1–R4, per-EV Available Power / Max Require Power]`. Per-MCU relay columns: **R1 = left bridge** (= previous MCU's right bridge), **R2/R3/R4 = inter-group relays** (G0-G1 / G1-G2 / G2-G3) — see `simulation/environment/vision_output.py::_build_relay_labels`. Boundary-consistency logs land alongside the CSV as `*_boundary.jsonl`. Note: code currently also emits an extra `SOC` column per EV that SPEC §17 does not list — keep this in mind when comparing.
 
 ## Recommended Architecture
 

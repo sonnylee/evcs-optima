@@ -8,8 +8,6 @@ from simulation.modules.traffic_simulator import TrafficSimulator, ArrivalEvent
 from simulation.modules.vehicle_generator import VehicleGenerator
 from simulation.utils.config_loader import VehicleProfile
 from simulation.log.relay_event_log import RelayEventLog
-from simulation.data.module_assignment import ModuleAssignment
-from simulation.data.relay_matrix import RelayMatrix
 from simulation.hardware.rectifier_board import RectifierBoard
 
 _CURVE = [(0.0, 250.0), (80.0, 250.0), (100.0, 0.0)]
@@ -18,11 +16,8 @@ _PROFILE = VehicleProfile("EV", 75.0, _CURVE)
 
 def _make_outputs(n_mcus=1):
     log = RelayEventLog()
-    rm = RelayMatrix(num_mcus=n_mcus)
-    ma = ModuleAssignment(num_outputs=2 * n_mcus, num_groups=4 * n_mcus, num_mcus=n_mcus)
     boards = [
-        RectifierBoard(mcu_id=i, event_log=log, relay_matrix=rm,
-                       module_assignment=ma, num_mcus=n_mcus)
+        RectifierBoard(mcu_id=i, event_log=log, num_mcus=n_mcus)
         for i in range(n_mcus)
     ]
     return [o for b in boards for o in b.outputs]

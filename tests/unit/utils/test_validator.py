@@ -20,13 +20,15 @@ def test_no_violations():
     assert v.has_failures() is False
 
 
-# TC-VAL-02: multiple-owner conflict triggers violations_log
+# TC-VAL-02: multiple-owner conflict on a board's own MA triggers violations_log
 def test_multiple_owner_violation():
     v, station = _make_validator(3)
-    ma = station.module_assignment
-    # Manually set G5 owned by both O0 and O1
-    ma._matrix[0][5] = 1
-    ma._matrix[1][5] = 1
+    # Manually corrupt MCU1's own MA: mark G5 (MCU1 self group, local idx 5)
+    # as owned by two outputs at once.
+    ma1 = station.boards[1].module_assignment
+    g_local = ma1.abs_to_local_group(5)
+    ma1._matrix[ma1.abs_to_local_output(0)][g_local] = 1
+    ma1._matrix[ma1.abs_to_local_output(1)][g_local] = 1
 
     v.check(1)
     assert len(v.violations_log) > 0

@@ -68,13 +68,14 @@ class SimulationEngine:
             self.vehicles.append(vehicle)
             _initial_connections.append((vp.output_index, vehicle))
 
-        # One MCUControl per MCU
+        # One MCUControl per MCU; each receives ITS OWN board's per-MCU
+        # RelayMatrix and ModuleAssignment instance (SPEC §10).
         self.mcu_controls: list[MCUControl] = [
             MCUControl(
                 mcu_id=i,
                 board=self.station.boards[i],
-                module_assignment=self.station.module_assignment,
-                relay_matrix=self.station.relay_matrix,
+                module_assignment=self.station.boards[i].module_assignment,
+                relay_matrix=self.station.boards[i].relay_matrix,
                 event_log=self.event_log,
                 station=self.station,
                 num_mcus=config.num_mcus,
@@ -320,16 +321,17 @@ class SimulationEngine:
                   f"(target {s['target_soc']}%), state={s['state']}")
         print()
 
-        rm = self.station.relay_matrix
-        ma = self.station.module_assignment
-        print("Relay Matrix (0=open, 1=closed, -1=no wire):")
-        for r in range(rm.size):
-            print(f"  {rm._matrix[r]}")
-        print()
-        print("Module Assignment (0=idle, 1=in use, -1=unreachable):")
-        for o in range(ma.num_outputs):
-            print(f"  O{o}: {ma._matrix[o]}")
-        print()
+        # Per-MCU snapshots (SPEC §10) — each board owns its own view.
+        for board in self.station.boards:
+            rm = board.relay_matrix
+            ma = board.module_assignment
+            print(f"MCU{board.mcu_id} Relay Matrix (0=open, 1=closed, -1=no wire):")
+            for r in range(rm.size):
+                print(f"  {rm._matrix[r]}")
+            print(f"MCU{board.mcu_id} Module Assignment (0=idle, 1=in use, -1=unreachable):")
+            for o in range(ma.num_outputs):
+                print(f"  O{o}: {ma._matrix[o]}")
+            print()
 
         all_snaps = self.snapshots.all()
         total = len(all_snaps)

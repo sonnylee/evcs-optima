@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from simulation.communication.messages import Stop
 from simulation.communication.return_protocol import send_conflict_release
-from tests.conftest import make_vehicle
+from tests.conftest import assign_across_station, get_owner_anywhere
 
 
 # TC-INT-CR-01: New vehicle conflict triggers ConflictRelease
@@ -12,7 +12,6 @@ from tests.conftest import make_vehicle
 async def test_conflict_release_cross_mcu(make_3mcu_system):
     station, mcus = make_3mcu_system()
     mcu0, mcu1, mcu2 = mcus
-    ma = station.module_assignment
 
     task0 = asyncio.create_task(mcu0.run())
     task1 = asyncio.create_task(mcu1.run())
@@ -22,17 +21,19 @@ async def test_conflict_release_cross_mcu(make_3mcu_system):
         state_o0.interval_min = 0
         state_o0.interval_max = 3
         for g in range(4):
-            ma.assign_if_idle(0, g)
+            assign_across_station(station, 0, g)
         mcu0._apply_global_relay_state()
 
         await mcu0._try_borrow_async(state_o0)
-        assert ma.get_owner(4) == 0  # MCU0.O0 owns G4
+        # Per-MCU MAs: MCU0 owns G4 in MCU0's mirror and in MCU1's authoritative MA.
+        assert station.boards[0].module_assignment.get_owner(4) == 0
+        assert station.boards[1].module_assignment.get_owner(4) == 0
 
         # MCU1 needs G4 for its O2 (new vehicle) — send ConflictRelease
         released = await send_conflict_release(mcu0, from_mcu=1, group_idx=4)
 
         assert released is True
-        assert ma.get_owner(4) is None
+        assert get_owner_anywhere(station, 4) is None
         assert state_o0.interval_max == 3  # MCU0 shrank
     finally:
         mcu0.stop()

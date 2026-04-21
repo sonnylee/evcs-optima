@@ -261,8 +261,11 @@ class MCUControl(Actor, SimulationModule):
             neighbor, self._mcu_id, target_phys, output_idx,
         )
         if granted:
-            # Responder already reserved `target` for us in ModuleAssignment;
-            # only update interval + relays here.
+            # Lender (neighbor) already reserved `target` in ITS OWN MA via
+            # _handle_borrow_request. Mirror the same cell into our own
+            # 3-MCU window so subsequent _can_assign / get_owner reads on
+            # this MCU see the borrowed cell as occupied (SPEC §10).
+            self._ma.assign_if_idle(output_idx, target_phys)
             self._apply_borrow(state, target, already_assigned=True)
             if neighbor is not None:
                 neighbor._sync_foreign_relays(self._step_index)
@@ -295,6 +298,9 @@ class MCUControl(Actor, SimulationModule):
             if not self._ma.assign_if_idle(output_idx, target_phys):
                 # Someone else claimed it between target selection and apply.
                 return
+            # Mirror to neighbor MAs that share this cell in their window
+            # (SPEC §10 — see ChargingStation.assign_across_window).
+            self._mirror_assign(output_idx, target_phys)
         if target < state.interval_min:
             state.interval_min = target
         else:
@@ -311,8 +317,21 @@ class MCUControl(Actor, SimulationModule):
             state.interval_max = target - 1
         self._apply_global_relay_state()
         output_idx = self._output_base + state.output_local_idx
-        self._ma.release(output_idx, self._wrap(target))
+        target_phys = self._wrap(target)
+        self._ma.release(output_idx, target_phys)
+        self._mirror_release(output_idx, target_phys)
         self._sync_output(state.output_local_idx)
+
+    # ── SPEC §10 mirror sync helpers ─────────────────────────────────
+
+    def _mirror_assign(self, abs_o: int, abs_g: int) -> None:
+        """Propagate a local assignment to other boards' MA mirrors."""
+        if self._station is not None:
+            self._station.assign_across_window(abs_o, abs_g)
+
+    def _mirror_release(self, abs_o: int, abs_g: int) -> None:
+        if self._station is not None:
+            self._station.release_across_window(abs_o, abs_g)
 
     # ── Incoming protocol handlers ───────────────────────────────────
 
@@ -328,18 +347,39 @@ class MCUControl(Actor, SimulationModule):
         msg.response.set_result(granted)
 
     async def _handle_return_notify(self, msg: ReturnNotify) -> None:
-        """Neighbor informs us they are releasing a group in our territory."""
+        """Neighbor informs us they are releasing a group in our territory.
+
+        With per-MCU MAs (SPEC §10), the lender MUST release the cell
+        from its own MA — the borrower's release in `_apply_return`
+        only updates the borrower's local mirror.
+        """
+        owner = self._ma.get_owner(msg.group_idx)
+        if owner is not None:
+            self._ma.release(owner, msg.group_idx)
         msg.response.set_result(True)
 
     async def _handle_conflict_release(self, msg: ConflictRelease) -> None:
-        """Neighbor needs a group we own; forcibly release from the owning output."""
+        """Neighbor needs a group we own; forcibly release from the owning output.
+
+        With per-MCU MAs (SPEC §10), `_force_return_group` only mutates this
+        MCU's own MA. Any released cell that physically belongs to a
+        DIFFERENT MCU lives there as a borrow mirror — the actual lender's
+        MA still shows our output as owner. Mirror-sync via `ReturnNotify`
+        so the lender clears its authoritative entry too.
+        """
         owner = self._ma.get_owner(msg.group_idx)
         if owner is None:
             msg.response.set_result(True)
             return
         local_out = owner - self._output_base
         if 0 <= local_out < OUTPUTS_PER_MCU:
-            self._force_return_group(local_out, msg.group_idx)
+            released = self._force_return_group(local_out, msg.group_idx)
+            for rg in released:
+                owner_mcu = rg // GROUPS_PER_MCU
+                if owner_mcu != self._mcu_id:
+                    neighbor = self._neighbor_by_mcu_id(owner_mcu)
+                    if neighbor is not None:
+                        await send_return_notify(neighbor, self._mcu_id, rg)
         msg.response.set_result(self._ma.get_owner(msg.group_idx) is None)
 
     # ── Vehicle lifecycle ────────────────────────────────────────────
@@ -424,7 +464,12 @@ class MCUControl(Actor, SimulationModule):
             else:
                 neighbor = self._neighbor_by_mcu_id(owner_mcu_id)
                 if neighbor is not None:
-                    neighbor._force_return_group(other_local, g)
+                    released = neighbor._force_return_group(other_local, g)
+                    # Mirror-sync our own MA window (SPEC §10): the neighbor
+                    # released cells in their own MA, but our 3-MCU window
+                    # still shows them as owned.
+                    for rg in released:
+                        self._ma.release(owner, rg)
                     touched_neighbors.add(neighbor)
 
         state.interval_min = required_min
@@ -466,6 +511,8 @@ class MCUControl(Actor, SimulationModule):
                     f"  [WARN] step {self._step_index}: arrival at MCU{self._mcu_id}"
                     f" O{output_local_idx} could not claim G{g}; held by Output {other}"
                 )
+                continue
+            self._mirror_assign(my_idx, g)
 
         for nb in touched_neighbors:
             nb._sync_foreign_relays(self._step_index)
@@ -557,6 +604,7 @@ class MCUControl(Actor, SimulationModule):
                 g_phys = self._wrap(g_virt)
                 if self._ma.get_owner(g_phys) == output_idx:
                     self._ma.release(output_idx, g_phys)
+                    self._mirror_release(output_idx, g_phys)
 
         state.interval_min = None
         state.interval_max = None
@@ -569,14 +617,20 @@ class MCUControl(Actor, SimulationModule):
 
     # ── Force return ─────────────────────────────────────────────────
 
-    def _force_return_group(self, other_local_idx: int, group_idx: int) -> None:
+    def _force_return_group(self, other_local_idx: int, group_idx: int) -> list[int]:
         """Release `group_idx` (physical) plus everything beyond it on the same
         edge of the interval. Wrap-aware: the side to shrink is chosen by the
         target's virtual position relative to the anchor, not by comparing
-        physical indices."""
+        physical indices.
+
+        Returns the list of physical group indices that were released — the
+        caller can use this list to mirror-sync their own MA (SPEC §10) when
+        the call crosses an MCU boundary.
+        """
         state = self._output_states[other_local_idx]
+        released: list[int] = []
         if not state.has_interval:
-            return
+            return released
         output_idx = self._output_base + other_local_idx
 
         # Find the virtual position of the target and the anchor inside the
@@ -590,7 +644,7 @@ class MCUControl(Actor, SimulationModule):
             if v_anchor is None and phys == state.anchor_group_idx:
                 v_anchor = v
         if v_target is None:
-            return  # not owned in this interval — nothing to force
+            return released  # not owned in this interval — nothing to force
         if v_anchor is None:
             # Shouldn't happen, but fall back to physical anchor.
             v_anchor = state.anchor_group_idx
@@ -606,6 +660,8 @@ class MCUControl(Actor, SimulationModule):
                 released_phys = self._wrap(released_virt)
                 if self._ma.get_owner(released_phys) == output_idx:
                     self._ma.release(output_idx, released_phys)
+                    self._mirror_release(output_idx, released_phys)
+                released.append(released_phys)
         else:
             while (
                 state.interval_min is not None
@@ -617,9 +673,12 @@ class MCUControl(Actor, SimulationModule):
                 released_phys = self._wrap(released_virt)
                 if self._ma.get_owner(released_phys) == output_idx:
                     self._ma.release(output_idx, released_phys)
+                    self._mirror_release(output_idx, released_phys)
+                released.append(released_phys)
 
         self._apply_global_relay_state()
         self._sync_output(other_local_idx)
+        return released
 
     # ── Target selection ─────────────────────────────────────────────
 

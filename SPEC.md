@@ -450,6 +450,7 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 | Relay | 兩種類型：(1) 功率流向 Output 的通路開關；(2) Group 之間的斷開與閉合 |
 | RelayEvent | Relay 事件的最小單位 |
 | RelayEventLog | 全站統一事件日誌，所有 Relay 在建構時注入同一份參考 |
+| RelayMatrix and ModuleAssignment | 每個 MCU 都擁有自已的 RelayMatrix 與 ModuleAssignment 且不做資源共享 |
 
 ---
 

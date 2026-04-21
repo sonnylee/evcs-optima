@@ -3,8 +3,6 @@
 import asyncio
 import pytest
 from simulation.communication.messages import Tick
-from simulation.data.module_assignment import ModuleAssignment
-from simulation.data.relay_matrix import RelayMatrix
 from simulation.hardware.rectifier_board import RectifierBoard
 from simulation.log.relay_event_log import RelayEventLog
 from simulation.modules.mcu_control import MCUControl
@@ -12,12 +10,12 @@ from tests.conftest import make_vehicle
 
 
 def _make_mcu(event_log, mcu_id=0, num_mcus=1, consecutive_threshold=1):
-    rm = RelayMatrix(num_mcus=num_mcus)
-    ma = ModuleAssignment(num_outputs=2 * num_mcus, num_groups=4 * num_mcus, num_mcus=num_mcus)
+    """Per-MCU board owns its own RelayMatrix + ModuleAssignment (SPEC §10)."""
     board = RectifierBoard(
-        mcu_id=mcu_id, event_log=event_log,
-        relay_matrix=rm, module_assignment=ma, num_mcus=num_mcus,
+        mcu_id=mcu_id, event_log=event_log, num_mcus=num_mcus,
     )
+    ma = board.module_assignment
+    rm = board.relay_matrix
     mcu = MCUControl(
         mcu_id=mcu_id, board=board, module_assignment=ma,
         relay_matrix=rm, event_log=event_log,

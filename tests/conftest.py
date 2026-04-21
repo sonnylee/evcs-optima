@@ -1,7 +1,5 @@
 import pytest
 from simulation.log.relay_event_log import RelayEventLog
-from simulation.data.module_assignment import ModuleAssignment
-from simulation.data.relay_matrix import RelayMatrix
 from simulation.hardware.rectifier_board import RectifierBoard
 from simulation.modules.mcu_control import MCUControl
 
@@ -13,14 +11,16 @@ def event_log():
 
 @pytest.fixture
 def make_single_mcu_system(event_log):
-    """1-MCU minimal system fixture, no ChargingStation."""
+    """1-MCU minimal system fixture, no ChargingStation.
+
+    Per SPEC §10, the board owns its per-MCU RelayMatrix and
+    ModuleAssignment; the fixture surfaces them via attribute access for
+    legacy tests that asserted on the matrix directly.
+    """
     def _make(consecutive_threshold=1):
-        rm = RelayMatrix(num_mcus=1)
-        ma = ModuleAssignment(num_outputs=2, num_groups=4, num_mcus=1)
-        board = RectifierBoard(
-            mcu_id=0, event_log=event_log,
-            relay_matrix=rm, module_assignment=ma, num_mcus=1,
-        )
+        board = RectifierBoard(mcu_id=0, event_log=event_log, num_mcus=1)
+        ma = board.module_assignment
+        rm = board.relay_matrix
         mcu = MCUControl(
             mcu_id=0, board=board, module_assignment=ma,
             relay_matrix=rm, event_log=event_log,
@@ -32,7 +32,10 @@ def make_single_mcu_system(event_log):
 
 @pytest.fixture
 def make_3mcu_system(event_log):
-    """3-MCU linear system fixture (standard dev/validation config)."""
+    """3-MCU ring system fixture (standard dev/validation config).
+
+    Each MCU receives ITS OWN board's per-MCU MA + RelayMatrix (SPEC §10).
+    """
     def _make(consecutive_threshold=1):
         from simulation.hardware.charging_station import ChargingStation
         station = ChargingStation(mcu_id=0, event_log=event_log, num_mcus=3)
@@ -42,8 +45,8 @@ def make_3mcu_system(event_log):
             mcu = MCUControl(
                 mcu_id=i,
                 board=station.boards[i],
-                module_assignment=station.module_assignment,
-                relay_matrix=station.relay_matrix,
+                module_assignment=station.boards[i].module_assignment,
+                relay_matrix=station.boards[i].relay_matrix,
                 event_log=event_log,
                 station=station,
                 num_mcus=3,
@@ -68,3 +71,22 @@ def make_vehicle(
     from simulation.modules.vehicle import Vehicle
     curve = [(0.0, max_power_kw), (80.0, max_power_kw), (100.0, 0.0)]
     return Vehicle(vehicle_id, battery_kwh, curve, initial_soc, target_soc)
+
+
+def assign_across_station(station, abs_output_idx: int, abs_group_idx: int) -> None:
+    """SPEC §10 helper: pre-populate the same (Output, Group) ownership
+    on every board's MA whose 3-MCU window covers both indices. Tests use
+    this as the per-MCU equivalent of the old shared-MA `assign_if_idle`."""
+    for board in station.boards:
+        board.module_assignment.assign_if_idle(abs_output_idx, abs_group_idx)
+
+
+def get_owner_anywhere(station, abs_group_idx: int) -> int | None:
+    """Return the absolute Output that owns `abs_group_idx`, scanning each
+    board's MA in turn. Useful for assertions that don't care which MCU's
+    view is consulted."""
+    for board in station.boards:
+        owner = board.module_assignment.get_owner(abs_group_idx)
+        if owner is not None:
+            return owner
+    return None

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from simulation.base import SimulationModule
+from simulation.data.module_assignment import ModuleAssignment
+from simulation.data.relay_matrix import RelayMatrix
 from simulation.hardware.output import Output
 from simulation.hardware.relay import Relay, RelayState, RelayType
 from simulation.hardware.smr_group import SMRGroup
 from simulation.log.relay_event_log import RelayEventLog
-
-if TYPE_CHECKING:
-    from simulation.data.module_assignment import ModuleAssignment
-    from simulation.data.relay_matrix import RelayMatrix
-
 
 # Single MCU layout: G0(50kW) - G1(75kW) - G2(75kW) - G3(50kW)
 # O0 anchored to G0, O1 anchored to G3
@@ -22,15 +19,16 @@ GROUP_CONFIGS = [2, 3, 3, 2]  # num SMRs per group (×25kW each)
 class RectifierBoard(SimulationModule):
     """Hardware abstraction for one MCU's rectifier board.
 
-    Assembles SMR Groups, Relays, and Outputs into the single-MCU topology.
+    Per SPEC §10, each board owns its OWN ``RelayMatrix`` and
+    ``ModuleAssignment`` instance covering a 3-MCU window (left
+    neighbor + self + right neighbor). Cross-MCU effects propagate via
+    Borrow/Return protocol messages — never by sharing these instances.
     """
 
     def __init__(
         self,
         mcu_id: int,
         event_log: RelayEventLog,
-        relay_matrix: RelayMatrix | None = None,
-        module_assignment: ModuleAssignment | None = None,
         num_mcus: int = 1,
         has_right_bridge: bool = False,
     ):
@@ -39,14 +37,20 @@ class RectifierBoard(SimulationModule):
         prefix = f"MCU{mcu_id}"
         g_base = mcu_id * 4  # global group index offset
 
+        # Per-MCU data structures (SPEC §10).
+        self.relay_matrix = RelayMatrix(mcu_id=mcu_id, num_mcus=num_mcus)
+        self.module_assignment = ModuleAssignment(mcu_id=mcu_id, num_mcus=num_mcus)
+
         # Build 4 SMR Groups
         self.groups: list[SMRGroup] = []
         for i, num_smrs in enumerate(GROUP_CONFIGS):
             self.groups.append(SMRGroup(f"{prefix}_G{i}", num_smrs))
 
-        # Compute matrix indices for relay endpoints
-        num_groups = relay_matrix.num_groups if relay_matrix else 0
-        o_matrix_base = num_groups + mcu_id * 2  # output index in RelayMatrix
+        # Absolute output indices used by Relay/Output to address the
+        # RelayMatrix endpoint namespace (groups occupy [0, 4*N), outputs
+        # follow at [4*N, 4*N + 2*N)).
+        global_groups = 4 * num_mcus
+        o_matrix_base = global_groups + mcu_id * 2
 
         # Build inter-group relays: R_01, R_12, R_23
         self.inter_group_relays: list[Relay] = []
@@ -58,7 +62,7 @@ class RectifierBoard(SimulationModule):
                 event_log=event_log,
                 node_a=self.groups[i].group_id,
                 node_b=self.groups[i + 1].group_id,
-                relay_matrix=relay_matrix,
+                relay_matrix=self.relay_matrix,
                 matrix_idx_a=g_base + i,
                 matrix_idx_b=g_base + i + 1,
             ))
@@ -73,7 +77,7 @@ class RectifierBoard(SimulationModule):
                 event_log=event_log,
                 node_a=f"{prefix}_O{i}",
                 node_b=self.groups[group_idx].group_id,
-                relay_matrix=relay_matrix,
+                relay_matrix=self.relay_matrix,
                 matrix_idx_a=o_matrix_base + i,
                 matrix_idx_b=g_base + group_idx,
             ))
@@ -89,7 +93,7 @@ class RectifierBoard(SimulationModule):
                 event_log=event_log,
                 node_a=self.groups[3].group_id,
                 node_b=f"MCU{next_mcu}_G0",
-                relay_matrix=relay_matrix,
+                relay_matrix=self.relay_matrix,
                 matrix_idx_a=g_base + 3,
                 matrix_idx_b=next_mcu * 4,
             )
@@ -106,14 +110,14 @@ class RectifierBoard(SimulationModule):
             Output(
                 f"{prefix}_O0", self.groups[0],
                 [self.groups[0], self.groups[1]],
-                module_assignment=module_assignment,
+                module_assignment=self.module_assignment,
                 output_idx=o_assign_base,
                 group_indices=[g_base, g_base + 1],
             ),
             Output(
                 f"{prefix}_O1", self.groups[3],
                 [self.groups[2], self.groups[3]],
-                module_assignment=module_assignment,
+                module_assignment=self.module_assignment,
                 output_idx=o_assign_base + 1,
                 group_indices=[g_base + 2, g_base + 3],
             ),
