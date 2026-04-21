@@ -743,9 +743,11 @@ class MCUControl(Actor, SimulationModule):
     def _can_assign(
         self, output_idx: int, global_group_idx: int, allow_cross_mcu: bool
     ) -> bool:
-        # Accept virtual indices (out of [0, num_groups)) and wrap in ring mode.
+        # Accept virtual indices (out of [0, num_groups_total)) and wrap in ring mode.
+        # Bound against the GLOBAL ring group count, not the per-MCU MA window
+        # (which is 12 for N>=2 — a 3-MCU window per SPEC §5.1/§10).
         phys = self._wrap(global_group_idx)
-        if phys < 0 or phys >= self._ma.num_groups:
+        if phys < 0 or phys >= self._num_groups_total:
             return False
         # Locality check uses the virtual index: any out-of-range (wrapped)
         # target is by definition cross-MCU.
