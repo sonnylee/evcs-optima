@@ -131,6 +131,7 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 | Constraint | Detail |
 |---|---|
 | Atomic relay events | Only `SWITCHED` state — no `COMMAND_ISSUED` or `FAILED` intermediates |
+| Relay ownership | Relay switching may be executed **only by the owning (local) MCU** — no external MCU may invoke another MCU's relays. Cross-MCU effects must go through borrow/return protocol messages (SPEC §6, §10, §11). |
 | Contiguous interval | All Groups for one Output must form an unbroken [MIN, MAX] range |
 | Local-first | Use local MCU resources before borrowing from neighbors |
 | Output relay close timing | Output relay may close only after ≥125kW is prepared for the EV (SPEC §11) |

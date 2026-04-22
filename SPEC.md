@@ -464,6 +464,7 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 | Ring Topology 約束 | 只有物理相鄰的 MCU 才能進行功率借還 |
 | 借電優先級 | 右 > 左 > 雙側 |
 | Relay 切換為原子操作 | 無 `COMMAND_ISSUED` 或 `FAILED` 中間狀態，只有 `SWITCHED` |
+| Relay 切換的動作僅有本體的 MCU 才能執行，不接受外部 MCU 呼叫 |
 | EV 到達充電需求 (EV 開離充電站) | EV 到達需求之後; 先開啟 (Open)所有 SMR Group 間的 Relays ，然後才開啟充電槍 (Output)的 Relay
 | EV 充電中不能開啟 Output 的 Relay |　EV 在未達充電需求之前，Output 的 Relay 是不允許開啟 (Open)，必需保持閉合 (Closed)
 

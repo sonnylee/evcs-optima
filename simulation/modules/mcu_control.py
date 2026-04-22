@@ -257,18 +257,32 @@ class MCUControl(Actor, SimulationModule):
         neighbor = self._get_neighbor_for_group(target_phys)
 
         output_idx = self._output_base + state.output_local_idx
+        # SPEC §11: the lender resyncs its own relays inside
+        # _handle_borrow_request, which reads our `state.interval_*` to
+        # compute required cross-MCU relays. Speculatively extend our
+        # interval BEFORE awaiting the request so the lender sees the
+        # committed bounds; revert if denied.
+        prev_min, prev_max = state.interval_min, state.interval_max
+        if target < state.interval_min:
+            state.interval_min = target
+        elif target > state.interval_max:
+            state.interval_max = target
+
         granted = await send_borrow_request(
-            neighbor, self._mcu_id, target_phys, output_idx,
+            neighbor, self._mcu_id, target_phys, output_idx, self._step_index,
         )
-        if granted:
-            # Lender (neighbor) already reserved `target` in ITS OWN MA via
-            # _handle_borrow_request. Mirror the same cell into our own
-            # 3-MCU window so subsequent _can_assign / get_owner reads on
-            # this MCU see the borrowed cell as occupied (SPEC §10).
-            self._ma.assign_if_idle(output_idx, target_phys)
-            self._apply_borrow(state, target, already_assigned=True)
-            if neighbor is not None:
-                neighbor._sync_foreign_relays(self._step_index)
+        if not granted:
+            state.interval_min, state.interval_max = prev_min, prev_max
+            return
+
+        # Lender (neighbor) already reserved `target` in ITS OWN MA AND
+        # resynced its own relays inside _handle_borrow_request
+        # (SPEC §11). Mirror the same cell into our own 3-MCU window so
+        # subsequent _can_assign / get_owner reads on this MCU see the
+        # borrowed cell as occupied (SPEC §10), then resync our own relays.
+        self._ma.assign_if_idle(output_idx, target_phys)
+        self._apply_global_relay_state()
+        self._sync_output(state.output_local_idx)
 
     async def _try_return_async(self, state: OutputPowerState) -> None:
         target = self._find_shrink_target(state, prefer_cross_mcu=True)
@@ -278,11 +292,32 @@ class MCUControl(Actor, SimulationModule):
         if not self._is_local_group(target):
             target_phys = self._wrap(target)
             neighbor = self._get_neighbor_for_group(target_phys)
-            await send_return_notify(neighbor, self._mcu_id, target_phys)
+            # SPEC §11: the lender resyncs its own relays inside
+            # _handle_return_notify, which reads our `state.interval_*` to
+            # decide what cross-MCU relays are still needed. Shrink our
+            # interval BEFORE the notify so the lender sees the
+            # post-return bounds and opens the now-unneeded relay.
+            if target == state.interval_min:
+                state.interval_min = target + 1
+            else:
+                state.interval_max = target - 1
+            # Lender clears its own MA AND resyncs its own relays inside
+            # _handle_return_notify (SPEC §11 — only the owning MCU may
+            # switch its relays).
+            await send_return_notify(
+                neighbor, self._mcu_id, target_phys, self._step_index,
+            )
+            # Finalize on our side: refresh local relays + output, release
+            # the cell from our MA mirror. (Cannot reuse `_apply_return`:
+            # it would shrink the interval a second time.)
+            self._apply_global_relay_state()
+            output_idx = self._output_base + state.output_local_idx
+            self._ma.release(output_idx, target_phys)
+            self._mirror_release(output_idx, target_phys)
+            self._sync_output(state.output_local_idx)
+            return
 
         self._apply_return(state, target)
-        if not self._is_local_group(target) and neighbor is not None:
-            neighbor._sync_foreign_relays(self._step_index)
 
     def _apply_borrow(
         self, state: OutputPowerState, target: int,
@@ -340,10 +375,17 @@ class MCUControl(Actor, SimulationModule):
 
         Atomically reserve on grant — closing the cross-actor race where two
         requesters both observe the group as idle and both get granted.
+
+        SPEC §11: only the owning MCU may switch its own relays. After
+        granting, resync our own inter-group / bridge relays here (stamped
+        at the requester's `step_index`) instead of letting the borrower
+        reach in and toggle them remotely.
         """
         granted = self._ma.assign_if_idle(
             msg.requester_output_idx, msg.group_idx,
         )
+        if granted:
+            self._sync_foreign_relays(msg.step_index)
         msg.response.set_result(granted)
 
     async def _handle_return_notify(self, msg: ReturnNotify) -> None:
@@ -352,10 +394,16 @@ class MCUControl(Actor, SimulationModule):
         With per-MCU MAs (SPEC §10), the lender MUST release the cell
         from its own MA — the borrower's release in `_apply_return`
         only updates the borrower's local mirror.
+
+        SPEC §11: only the owning MCU may switch its relays. After
+        releasing, resync our own inter-group / bridge relays here
+        (stamped at the requester's `step_index`) instead of letting
+        the borrower reach in and toggle them remotely.
         """
         owner = self._ma.get_owner(msg.group_idx)
         if owner is not None:
             self._ma.release(owner, msg.group_idx)
+            self._sync_foreign_relays(msg.step_index)
         msg.response.set_result(True)
 
     async def _handle_conflict_release(self, msg: ConflictRelease) -> None:
@@ -379,7 +427,9 @@ class MCUControl(Actor, SimulationModule):
                 if owner_mcu != self._mcu_id:
                     neighbor = self._neighbor_by_mcu_id(owner_mcu)
                     if neighbor is not None:
-                        await send_return_notify(neighbor, self._mcu_id, rg)
+                        await send_return_notify(
+                            neighbor, self._mcu_id, rg, self._step_index,
+                        )
         msg.response.set_result(self._ma.get_owner(msg.group_idx) is None)
 
     # ── Vehicle lifecycle ────────────────────────────────────────────
@@ -452,7 +502,6 @@ class MCUControl(Actor, SimulationModule):
         # SPEC §6.3 initiator side: anchor groups may already be owned by
         # another Output (same MCU or neighbor via a prior borrow). Force the
         # holder to release before we claim them.
-        touched_neighbors: set[MCUControl] = set()
         for g in range(required_min, required_max + 1):
             owner = self._ma.get_owner(g)
             if owner is None or owner == self._output_base + output_local_idx:
@@ -464,13 +513,19 @@ class MCUControl(Actor, SimulationModule):
             else:
                 neighbor = self._neighbor_by_mcu_id(owner_mcu_id)
                 if neighbor is not None:
-                    released = neighbor._force_return_group(other_local, g)
+                    # Pass our step_index so the neighbor's internal
+                    # _apply_global_relay_state() (called inside
+                    # _force_return_group) stamps relay events at this
+                    # tick. SPEC §11: the neighbor switches its own
+                    # relays — we don't reach in afterwards.
+                    released = neighbor._force_return_group(
+                        other_local, g, step_index=self._step_index,
+                    )
                     # Mirror-sync our own MA window (SPEC §10): the neighbor
                     # released cells in their own MA, but our 3-MCU window
                     # still shows them as owned.
                     for rg in released:
                         self._ma.release(owner, rg)
-                    touched_neighbors.add(neighbor)
 
         state.interval_min = required_min
         state.interval_max = required_max
@@ -514,8 +569,9 @@ class MCUControl(Actor, SimulationModule):
                 continue
             self._mirror_assign(my_idx, g)
 
-        for nb in touched_neighbors:
-            nb._sync_foreign_relays(self._step_index)
+        # SPEC §11 (relay ownership): no explicit cross-MCU relay sync here.
+        # Each neighbor whose territory we touched already resynced its own
+        # relays inside `_force_return_group → _apply_global_relay_state`.
         # Three-phase arrival (SPEC §11):
         #   Tick T   — arrival event only (all relays still OFF).
         #   Tick T+1 — close inter-group / bridge relays to form anchor path.
@@ -617,7 +673,10 @@ class MCUControl(Actor, SimulationModule):
 
     # ── Force return ─────────────────────────────────────────────────
 
-    def _force_return_group(self, other_local_idx: int, group_idx: int) -> list[int]:
+    def _force_return_group(
+        self, other_local_idx: int, group_idx: int,
+        step_index: int | None = None,
+    ) -> list[int]:
         """Release `group_idx` (physical) plus everything beyond it on the same
         edge of the interval. Wrap-aware: the side to shrink is chosen by the
         target's virtual position relative to the anchor, not by comparing
@@ -626,7 +685,14 @@ class MCUControl(Actor, SimulationModule):
         Returns the list of physical group indices that were released — the
         caller can use this list to mirror-sync their own MA (SPEC §10) when
         the call crosses an MCU boundary.
+
+        `step_index`, when supplied (cross-MCU arrival path), is adopted as
+        our own step index before the internal `_apply_global_relay_state()`
+        runs, so the resulting relay events are stamped at the requester's
+        tick instead of our stale local one.
         """
+        if step_index is not None:
+            self._step_index = step_index
         state = self._output_states[other_local_idx]
         released: list[int] = []
         if not state.has_interval:
