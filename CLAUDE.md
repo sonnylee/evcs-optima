@@ -12,21 +12,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The authoritative specification is `SPEC.md` (Traditional Chinese). Read it first when beginning any implementation work.
 
+## Key Specs (load on demand)
+- Web & API service: @docs/SPEC-WEB-API.md
+- Full spec reference: @docs/SPEC.md
+
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 ```
-
-The devcontainer is Node.js 20 + Python. `ANTHROPIC_API_KEY` is required as a devcontainer secret.
-
-End-to-end check (all 14 scenarios, 4-MCU ring):
-
-```bash
-python3 demo_phase5.py   # writes CSV + boundary JSONL under associate/verify/scenarios/
-```
-
-> No formal lint/test suite yet. `demo_phase5.py` is the de-facto regression harness — expect every scenario to report `inconsistent=0  violations=0`.
 
 Reference EV profile for development/validation: **2024 Tesla Cybertruck Cyberbeast** (325 kW peak). Charging curve data: `associate/ev_curve_data.csv` (SPEC §15).
 
@@ -160,3 +154,38 @@ Recommended (optional, per SPEC §14): **asyncio + Queue (Actor Model)** — eac
 ## Testing
 
 See `associate/TEST-SPEC.md` for the full test specification (SPEC §19).
+
+## Web & API Layer (planned — full spec: docs/SPEC-WEB-API.md)
+
+Three-tier architecture wrapping the existing Python simulation core. **Neither `services/evcs-api/` nor `web/evcs-ui/` exists in the repo yet** — when implementing, create these trees (layout below is prescriptive, per SPEC-WEB-API §5).
+
+1. **Bun Web UI** (`web/evcs-ui/`, React + TypeScript) — MCU topology view, config panel, Car Port input panel, step player. Entry points: `src/api/evcsApiClient.ts`, `src/stores/evcsStore.ts`, `src/components/{topology, config-panel, car-port-panel, step-player}/`.
+2. **FastAPI Service** (`services/evcs-api/`) — REST facade + validation + session store + core adapter. Routes under `app/api/v1/`: `health`, `constants`, `sessions`, `validation`, `snapshot`, `control_steps`. Pydantic schemas in `app/schemas/`; core integration in `app/adapters/evcs_core_adapter.py`.
+3. **Python Core** (existing `simulation/`) — unchanged. The FastAPI adapter translates Web Input → Core Input and Core Output → API Step Sequence.
+
+### Domain terms (SPEC-WEB-API §3.1)
+
+| Term | Meaning |
+|---|---|
+| **Max Required** | EV-declared per-port power ceiling. 0~600 kW, 25 kW steps. |
+| **Present** | Current actual output per port — *starting point* for step generation. |
+| **Target** | Desired output per port — *endpoint*. `Apply and Generate` diffs Present→Target into a control-step sequence. |
+
+### Functional requirements at a glance (FR-01…FR-16)
+
+- **Display (FR-01…06)**: REC BD color ID + live kW, 25 kW pack coloring matches owning REC BD, relay closed=red / open=white, car icon blue=charging / gray=idle, per-port Max Required label.
+- **Interaction (FR-07, 12…15)**: ±25 kW buttons, manual Max Required / Present / Target input (with validation + 25 kW rounding), Apply-and-Generate, forward/back step player (wraps at ends).
+- **Configuration (FR-10, 11, 16)**: REC BD count 1~12 (default 4, each → 2 Car Ports), per-REC-BD module-power list like `"50,75,75,50"` (each value a 25 kW multiple, 50~100 kW), per-Car-Port unique priority 1..N where N = 2 × REC BD count.
+- **Logic / Behavior (FR-08, 09)**: 0~600 kW hard clamp in 25 kW steps, instant global recompute of REC BD / pack / relay / car / Max Required visuals on any change.
+
+### Development phases (SPEC-WEB-API §4)
+
+1. **FastAPI Foundation** — project skeleton, `/health` `/constants` `/palette`, Pydantic schemas, validation service, session store.
+2. **Topology & Visual Snapshot API** — REC BD / 25 kW Pack / Relay / Car snapshot, priority validation. Exit: any Max Required change returns a complete `VisualSnapshot`.
+3. **Python Core Adapter** — `EvcsCoreAdapter` maps Present→Target to step sequence; unreasonable-Present warning; Target-over-capacity check.
+4. **Bun/React UI** — topology view, config panel, car-port input panel, Apply-and-Generate flow, step player, error display.
+
+### Behavior that is load-bearing for the core adapter
+
+- Control steps must obey the existing hardware constraints (SPEC §11): ≥125 kW before closing Output relay, Output relay stays Closed mid-charge, inter-Group / bridge relays close before Output on arrival and open before Output on departure. The adapter cannot bypass these — they are enforced by the core `MCUControl`.
+- Priority (FR-16) replaces the default top-down Car-ID allocation order; the adapter must feed it into the allocation strategy, not just record it.
