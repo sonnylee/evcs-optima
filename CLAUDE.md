@@ -14,6 +14,7 @@ The authoritative specification is `SPEC.md` (Traditional Chinese). Read it firs
 
 ## Key Specs (load on demand)
 - Web & API service: @docs/SPEC-WEB-API.md
+- Web UI: @docs/SPEC-WEB-UI.md
 - Full spec reference: @docs/SPEC.md
 
 ## Setup
@@ -155,9 +156,9 @@ Recommended (optional, per SPEC §14): **asyncio + Queue (Actor Model)** — eac
 
 See `associate/TEST-SPEC.md` for the full test specification (SPEC §19).
 
-## Web & API Layer (planned — full spec: docs/SPEC-WEB-API.md)
+## Web & API Layer (full spec: docs/SPEC-WEB-API.md; UI spec: docs/SPEC-WEB-UI.md)
 
-Three-tier architecture wrapping the existing Python simulation core. **Neither `services/evcs-api/` nor `web/evcs-ui/` exists in the repo yet** — when implementing, create these trees (layout below is prescriptive, per SPEC-WEB-API §5).
+Three-tier architecture wrapping the existing Python simulation core. `services/evcs-api/` exists (Phases 1–3 complete: FastAPI foundation, snapshot API, EvcsCoreAdapter producing `ControlStepSequence` from Present→Target with SPEC §11 ordering). `web/evcs-ui/` has not been created yet — Phase 4 follows SPEC-WEB-UI.md and the layout below.
 
 1. **Bun Web UI** (`web/evcs-ui/`, React + TypeScript) — MCU topology view, config panel, Car Port input panel, step player. Entry points: `src/api/evcsApiClient.ts`, `src/stores/evcsStore.ts`, `src/components/{topology, config-panel, car-port-panel, step-player}/`.
 2. **FastAPI Service** (`services/evcs-api/`) — REST facade + validation + session store + core adapter. Routes under `app/api/v1/`: `health`, `constants`, `sessions`, `validation`, `snapshot`, `control_steps`. Pydantic schemas in `app/schemas/`; core integration in `app/adapters/evcs_core_adapter.py`.
@@ -187,5 +188,42 @@ Three-tier architecture wrapping the existing Python simulation core. **Neither 
 
 ### Behavior that is load-bearing for the core adapter
 
-- Control steps must obey the existing hardware constraints (SPEC §11): ≥125 kW before closing Output relay, Output relay stays Closed mid-charge, inter-Group / bridge relays close before Output on arrival and open before Output on departure. The adapter cannot bypass these — they are enforced by the core `MCUControl`.
-- Priority (FR-16) replaces the default top-down Car-ID allocation order; the adapter must feed it into the allocation strategy, not just record it.
+- Control steps must obey the existing hardware constraints (SPEC §11): ≥125 kW before closing Output relay, Output relay stays Closed mid-charge, inter-Group / bridge relays close before Output on arrival and open before Output on departure. The Phase 3 adapter (`services/evcs-api/app/adapters/step_planner.py`) enforces these via snapshot post-processing — it does **not** invoke the time-driven `simulation/` core, which is incompatible with stateless step generation and does not support FR-11 user-configurable per-REC-BD module powers.
+- Priority (FR-16) replaces the default top-down Car-ID allocation order; the adapter feeds it into the allocation strategy in `state_calculation_service.compute_snapshot`.
+
+### Web UI layer (Phase 4 — full spec: docs/SPEC-WEB-UI.md)
+
+**Stack**: Bun runtime, React 18 + TypeScript 5, Zustand store, openapi-fetch + openapi-typescript (auto-generated types from FastAPI's `/openapi.json`), Tailwind CSS, Vite, Vitest. Single-page tool — no react-router; `store.mode ∈ {'edit', 'player'}` switches the left pane while TopologyView (right pane) re-renders from `store.snapshot`.
+
+**Project layout** (per SPEC-WEB-UI §1.2):
+
+```
+web/evcs-ui/src/
+├── api/{schema.ts, evcsApiClient.ts}         # schema.ts is generated; do not hand-edit
+├── components/
+│   ├── topology/{TopologyView, RecBdLabel, PackGrid, RelayIcon, CarIcon}
+│   ├── config-panel/{ConfigPanel, RecBdCountInput, ModulePowerInput}
+│   ├── car-port-panel/{CarPortPanel, CarPortRow, MaxRequiredField, PresentTargetFields, PriorityField}
+│   ├── step-player/{StepPlayer, StepProgress, StepDescription}
+│   └── shared/{ErrorBanner, WarningList, Button}
+├── stores/evcsStore.ts                        # Zustand global store
+├── hooks/{useDebounce, useSnapshotRefetch}
+├── types/evcs.ts                              # re-exports from schema.ts
+└── utils/{validation, colors}
+```
+
+**Single source of truth**: TopologyView reads `store.snapshot` only — same component renders both edit-mode (live snapshot from `GET /sessions/{id}/snapshot`) and player-mode (current step's snapshot from `POST /sessions/{id}/step`). Do not branch TopologyView on `mode`.
+
+**Key store actions** (FR mapping):
+- `nudgeMaxRequired(portId, ±25)` (FR-07): clamp [0, 600] before the API call; if clamped value equals current, early-return without hitting the network.
+- `updateCarPort(portId, patch)`: PATCHes session always. **Only `max_required` triggers `refreshSnapshot`** — `present`/`target`/`priority` changes must NOT re-render TopologyView (FR-13, FR-16).
+- `applyAndGenerate()` (FR-14): on 422 with code `TARGET_EXCEEDS_CAPACITY` or `PRIORITIES_INSUFFICIENT`, write to `carPortErrors`; on `total_steps === 0` stay in edit mode + show "No change required" toast; otherwise switch `mode → 'player'` and load `data.initial_state` into snapshot.
+- `stepForward / stepBack` (FR-15): the FastAPI route already wraps at both ends — the UI must not reimplement wrap logic.
+
+**Color contract**: never hardcode the hex values for relay/car/pack states in components — fetch them from `GET /api/v1/palette`'s `semantic` block on first load and store under the Zustand store. Backend constants are the authoritative source.
+
+**Type sync workflow**: `bun run gen:api` curls `http://localhost:8000/openapi.json` and regenerates `src/api/schema.ts`. Run after every backend schema change; the TS compiler then surfaces every call site that needs updating. Do NOT hand-edit `schema.ts`.
+
+**Validation precedence**: backend always re-validates. Frontend `clamp(0, 600)` + round-to-25 in `MaxRequiredField`/`PresentField` is for UX (avoid 422 round-trips), not security — backend remains the source of truth.
+
+**Optional follow-up endpoint** (per SPEC-WEB-UI §8): `POST /api/v1/sessions/{session_id}/car-ports/{port_id}/nudge?delta=25|-25` would collapse FR-07's PATCH+GET into one round-trip. Not implemented; flag if the UI work would benefit before adding.
