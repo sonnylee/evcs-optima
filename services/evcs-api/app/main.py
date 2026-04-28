@@ -4,7 +4,16 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import constants, health, palette, sessions, snapshot, topology, validation
+from app.api.v1 import (
+    constants,
+    control_steps,
+    health,
+    palette,
+    sessions,
+    snapshot,
+    topology,
+    validation,
+)
 
 
 def create_app() -> FastAPI:
@@ -34,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router, prefix=prefix)
     app.include_router(topology.router, prefix=prefix)
     app.include_router(snapshot.router, prefix=prefix)
+    app.include_router(control_steps.router, prefix=prefix)
     return app
 
 

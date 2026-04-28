@@ -85,6 +85,15 @@ class SessionStore:
             s.mode = "player"
             return s.model_copy(deep=True)
 
+    def set_step_index(self, session_id: str, index: int) -> Optional[SessionState]:
+        """FR-15 player cursor — assumes caller already validated/wrapped the index."""
+        with self._lock:
+            s = self._sessions.get(session_id)
+            if s is None:
+                return None
+            s.current_step_index = index
+            return s.model_copy(deep=True)
+
 
 # Module-level singleton — FastAPI dependency resolves to this.
 _store = SessionStore()
