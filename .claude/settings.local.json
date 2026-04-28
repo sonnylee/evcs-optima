@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun --version)",
+      "Bash(npm install *)",
+      "Bash(python3 -m uvicorn app.main:app --app-dir services/evcs-api --port 8000)",
+      "Bash(curl -sf http://localhost:8000/openapi.json -o /tmp/openapi-check.json)",
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(npx vite *)",
+      "Bash(curl -sf http://localhost:5173/ -o /dev/null)",
+      "Bash(curl -sI http://localhost:5173/)",
+      "Bash(curl -sf http://localhost:5173/src/main.tsx)",
+      "Bash(kill bba3pcxca *)",
+      "Bash(pkill -f \"uvicorn app.main\")",
+      "Bash(pkill -f \"vite --port 5173\")",
+      "Bash(pkill -f uvicorn)",
+      "Bash(pkill -f vite)"
+    ]
+  }
+}

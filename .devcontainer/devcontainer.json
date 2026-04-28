@@ -1,13 +1,25 @@
 {
   "name": "EVCS Dev Environment",
-  //"image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && ([ -f requirements.txt ] && pip install -r requirements.txt || true)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/shyim/devcontainers-features/bun:0": {}
+  },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && (cd web/evcs-ui && bun install)",
+  "forwardPorts": [8000, 5173],
   "customizations": {
     "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+        "python.terminal.activateEnvInCurrentTerminal": true
+      },
       "extensions": [
         "ms-python.python",
-        "ms-python.vscode-pylance"
+        "ms-python.vscode-pylance",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
       ]
     }
   },
