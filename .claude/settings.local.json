@@ -16,7 +16,10 @@
       "Bash(pkill -f \"uvicorn app.main\")",
       "Bash(pkill -f \"vite --port 5173\")",
       "Bash(pkill -f uvicorn)",
-      "Bash(pkill -f vite)"
+      "Bash(pkill -f vite)",
+      "Bash(python -c \"import simulation.environment.simulation_engine; print\\('import ok'\\)\")",
+      "Bash(python -m pytest tests/integration/test_engine_for_web_spike.py::test_spec_01 -v -m spike)",
+      "Bash(python -m pytest tests/integration/test_engine_for_web_spike.py -v -m spike -s)"
     ]
   }
 }

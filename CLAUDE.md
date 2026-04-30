@@ -227,3 +227,5 @@ web/evcs-ui/src/
 **Validation precedence**: backend always re-validates. Frontend `clamp(0, 600)` + round-to-25 in `MaxRequiredField`/`PresentField` is for UX (avoid 422 round-trips), not security — backend remains the source of truth.
 
 **Optional follow-up endpoint** (per SPEC-WEB-UI §8): `POST /api/v1/sessions/{session_id}/car-ports/{port_id}/nudge?delta=25|-25` would collapse FR-07's PATCH+GET into one round-trip. Not implemented; flag if the UI work would benefit before adding.
+
+**Wireframe reference**: layout must match the Figma EVCS-Vision board (node 13:572). If the Figma link is unreachable, fall back to the PDFs in `associate/`: `main-page.pdf` (topology + car-port-panel), `config-page.pdf` (topology + config-panel), `player-page.pdf` (topology + step-player).

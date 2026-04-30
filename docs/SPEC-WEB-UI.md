@@ -1012,3 +1012,8 @@ POST   /api/v1/sessions/{id}/step?direction=forward|back
 - Relay 圖示樣式（圓形 vs 方形）
 - Car icon 圖樣（剪影 / icon font / SVG）
 - 配色精確 hex 值（前端不寫死，從 `/palette` 拿）
+
+實作 Web UI 需與  Figma 連結中的畫面一致，如果無法讀取 Figma 連結，可以參考下列 .pdf 檔案
+- 已上傳 @associate/main-page.pdf (對應到的元件為 topology + car-port-panel)
+- 已上傳 @associate/config-page.pdf (對應到的元件為 topology + config-panel)
+- 已上傳 @associate/player-page.pdf (對應到的元件為 topology + step-player)
