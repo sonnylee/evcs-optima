@@ -1,4 +1,11 @@
-"""Snapshot routes — FR-02..05 + FR-09 live recompute."""
+"""Snapshot routes — FR-02..05 + FR-09 live recompute.
+
+Phase 3 / F09.3: both routes are ``async def`` and ``await
+compute_snapshot_async`` directly, eliminating the ``asyncio.run()`` wrap
+the sync ``compute_snapshot`` would otherwise add. This avoids the
+nested-event-loop crash flagged in F09.1.5 / F09.2 and gives a single
+coroutine path through the rebuild-engine snapshot strategy.
+"""
 from __future__ import annotations
 
 from typing import List
@@ -10,7 +17,7 @@ from app.schemas.car_port import CarPortInput
 from app.schemas.config import SystemConfig
 from app.schemas.snapshot import VisualSnapshot
 from app.services.session_service import SessionStore, get_store
-from app.services.state_calculation_service import compute_snapshot
+from app.services.state_calculation_service import compute_snapshot_async
 
 router = APIRouter(tags=["snapshot"])
 
@@ -22,19 +29,23 @@ class SnapshotComputeRequest(BaseModel):
 
 
 @router.post("/snapshot/compute", response_model=VisualSnapshot)
-def compute(req: SnapshotComputeRequest) -> VisualSnapshot:
+async def compute(req: SnapshotComputeRequest) -> VisualSnapshot:
     """Stateless recompute — used by the UI for instant FR-09 feedback."""
 
-    return compute_snapshot(req.system_config, req.car_ports, cycle=req.cycle_palette)
+    return await compute_snapshot_async(
+        req.system_config, req.car_ports, cycle=req.cycle_palette
+    )
 
 
 @router.get("/sessions/{session_id}/snapshot", response_model=VisualSnapshot)
-def session_snapshot(
+async def session_snapshot(
     session_id: str, store: SessionStore = Depends(get_store)
 ) -> VisualSnapshot:
+    """FR-09: stateful snapshot for an existing session."""
+
     s = store.get(session_id)
     if s is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, detail=f"session {session_id} not found"
         )
-    return compute_snapshot(s.system_config, s.car_ports)
+    return await compute_snapshot_async(s.system_config, s.car_ports)
