@@ -136,9 +136,10 @@ def test_single_port_125kw():
     _assert_snapshot_invariants(snap, system)
 
 
-def test_single_port_250kw():
+@pytest.mark.asyncio
+async def test_single_port_250kw():
     system = _cfg(4)
-    eng = WebSessionEngine(system, _set([(1, 250, None)]))
+    eng = await WebSessionEngine.create(system, _set([(1, 250, None)]))
     snap = eng.to_visual_snapshot()
 
     p1_owned = [p for p in snap.packs if p.owner_port_id == 1]
@@ -167,9 +168,10 @@ def test_two_ports_same_recbd():
     _assert_snapshot_invariants(snap, system)
 
 
-def test_two_ports_cross_mcu():
+@pytest.mark.asyncio
+async def test_two_ports_cross_mcu():
     system = _cfg(4)
-    eng = WebSessionEngine(system, _set([(1, 350, None)]))
+    eng = await WebSessionEngine.create(system, _set([(1, 350, None)]))
     snap = eng.to_visual_snapshot()
 
     # 350 kW > 250 (REC BD 1 capacity) so port 1 must borrow from a neighbor.

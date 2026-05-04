@@ -234,3 +234,38 @@ SPIKE_RESULT::test_dyn_04_overload::{
   "err": ""
 }
 ```
+
+---
+
+## F09.1.5 量測 — WebSessionEngine async factory 延遲
+
+**執行環境**
+
+- Python 3.13.5
+- Linux 6.8.0-1044-azure x86_64
+- AMD EPYC 7763 64-Core Processor
+- 量測時間:2026-05-04
+
+**量測方式**
+
+每場景 100 次,記錄 `WebSessionEngine.create()` + `to_visual_snapshot()` 加總時間(以毫秒計)。預先跑一次 `empty` 場景作 warm-up,避免 module 初始化偏移第一次呼叫的數字。
+
+執行:`PYTHONPATH=.:<repo> pytest services/evcs-api/tests/test_web_session_engine_perf.py -m benchmark -s -v`
+
+**結果**
+
+| 場景 | P50 | P95 | P99 | max | settle? |
+|---|---|---|---|---|---|
+| `empty`(全 0) | 0.61 ms | 1.09 ms | 2.00 ms | 2.00 ms | ❌(`__init__` 也跳過 settle 條件) |
+| `single_125`(port 1 = 125 kW) | 1.41 ms | 2.31 ms | 7.59 ms | 7.61 ms | ✅ 進入 loop,但 anchor 即配 |
+| `single_250`(port 1 = 250 kW) | 1.76 ms | 2.79 ms | 3.75 ms | 3.75 ms | ✅ borrow 1 個 group |
+| `two_local`(port 1, 2 各 125 kW) | 1.56 ms | 6.66 ms | 11.99 ms | 11.99 ms | ✅ 兩 anchor 同時 |
+| `two_cross_mcu`(port 1 = 350 kW) | 2.31 ms | 3.67 ms | 21.44 ms | 21.61 ms | ✅ cross-MCU borrow |
+| `full_8_ports`(8 port 各 125 kW) | 1.97 ms | 2.87 ms | 4.45 ms | 4.45 ms | ✅ 8 anchor 同時 |
+
+**觀察**
+
+1. 全部場景 P95 ≤ 7 ms,P99 ≤ 22 ms — 與 SPEC-WEB-API.md 的 1 秒承諾相比有 ~140× 餘裕。
+2. `two_cross_mcu` 的 max(21.6 ms)是所有場景中最高的,因為 cross-MCU borrow 觸發的 protocol 訊息往返較多。但 P95(3.67 ms)仍然非常快,顯示 max 是異常值而非典型情境。
+3. settle loop 有非零成本,但 4 MCU × [50,75,75,50] 在所有 SPEC §16 情境內都能在 ~10 ticks 內收斂。
+

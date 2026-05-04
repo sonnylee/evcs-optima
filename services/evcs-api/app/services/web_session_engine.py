@@ -88,6 +88,28 @@ class WebSessionEngine:
     """Rebuild-engine adapter for FR-09 / FR-14.
 
     Sprint 1 scope: 4 MCU × [50,75,75,50]. FR-11 dynamic powers → Sprint 2.
+
+    **Construction patterns**:
+
+    - Async path (canonical for production)::
+
+        engine = await WebSessionEngine.create(system, ports)
+        snap = engine.to_visual_snapshot()
+
+    - Sync path (for tests with all-zero or anchor-only demand)::
+
+        engine = WebSessionEngine(system, ports)  # no settle
+        snap = engine.to_visual_snapshot()
+
+    The sync ``__init__`` only configures anchor + initial 2 groups (~125 kW).
+    Anything requiring cross-MCU borrow or > 125 kW per port must use
+    ``create()``, otherwise the snapshot will reflect partial allocation.
+
+    **Async safety**:
+    Both ``create()`` and ``__init__`` are safe to call from async code.
+    The sync ``__init__`` does not spin up a new event loop, so it is also
+    safe inside a running FastAPI request — but its snapshot will be
+    incomplete unless the demand fits the anchor-only envelope above.
     """
 
     def __init__(
@@ -95,6 +117,13 @@ class WebSessionEngine:
         system_config: SystemConfig,
         car_ports: List[CarPortInput],
     ) -> None:
+        """Sync constructor — only validates and builds the SimulationEngine.
+
+        Use :meth:`WebSessionEngine.create` (async) for the full settle path.
+        Direct ``__init__`` use is reserved for tests that don't need
+        cross-MCU borrows (i.e. all-zero or per-port ≤ 125 kW with no
+        cross-MCU demand).
+        """
         self._validate_sprint1(system_config)
         self._system_config = system_config
         self._car_ports = list(car_ports)
@@ -103,12 +132,26 @@ class WebSessionEngine:
         self._engine = SimulationEngine(
             cfg, traffic_simulator=None, scenario_name="web_session"
         )
+        # __init__ no longer settles — caller must use create() if demand
+        # > 125 kW or cross-MCU borrow is involved.
 
-        # Constructor only runs synchronous handle_vehicle_arrival (anchor +
-        # initial 2 groups ≈ 125 kW). Cross-MCU borrows require the actor
-        # loop to fire — drive it until events settle.
-        if any(p.max_required > 0 for p in self._car_ports):
-            asyncio.run(self._settle_until_stable())
+    @classmethod
+    async def create(
+        cls,
+        system_config: SystemConfig,
+        car_ports: List[CarPortInput],
+    ) -> "WebSessionEngine":
+        """Async factory — builds the engine and drives the actor settle loop.
+
+        This is the canonical entry point for FR-09 and FR-14 paths.
+        Required when any port's ``max_required > 125`` kW or cross-MCU
+        borrow is needed (the sync constructor only completes anchor +
+        initial groups via ``handle_vehicle_arrival``).
+        """
+        instance = cls(system_config, car_ports)
+        if any(p.max_required > 0 for p in instance._car_ports):
+            await instance._settle_until_stable()
+        return instance
 
     # ── Validation ───────────────────────────────────────────────────────
 

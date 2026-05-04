@@ -288,11 +288,25 @@ fetch at : "https://www.figma.com/design/KHQ1AFIbh2lBS5m8TSOrv9/EVCS-Vision?node
 
 每次使用者透過按鈕調整任一 Car Port 的 Max Required 後，系統需立即重新計算並更新所有聯動視覺元件，確保介面與計算狀態一致。
 
-1. **語義**:每次 `max_required` 變化後,後端建立新的 `SimulationEngine` 實例,讀取其穩態,回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
-2. **延遲**:Spike 量測 engine 建構成本約 0.7~4 ms,加上 schema 翻譯與 snapshot 提取,P95 預估 < 50 ms。對應 SPEC 承諾:
+1. **語義**:每次 `max_required` 變化後,後端透過 `WebSessionEngine.create(...)`(async factory)建立新的 engine 實例 — 同步配 anchor + 初始 group(≈ 125 kW),然後驅動 actor settle loop 完成 borrow / cross-MCU 演化,最後讀取穩態回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
+
+   **實作備註**:Phase 0 Spike 報告 §觀察 1 描述「`SimulationEngine.__init__` 即穩態」並不精確 — `__init__` 僅同步配 anchor + ~125 kW 的初始 group,任何 borrow 或 cross-MCU 演化必須由 actor settle loop 完成。`WebSessionEngine` 將此 settle loop 封裝在 `create()` 中,提供 caller「await 一次即穩態」的語義;sync `__init__` 仍保留作為 anchor-only / 全 0 demand 的 fast path,且不會在 async context 中崩潰(只是 snapshot 反映部分配置)。
+
+2. **延遲**(F09.1.5 實測,4 MCU × [50,75,75,50] 預設配置,AMD EPYC 7763,Python 3.13.5,Linux x86_64,每場景 100 次):
+
+   | 場景類型 | 範例 | P50 | P95 | P99 |
+   |---|---|---|---|---|
+   | 無 settle / anchor-only | empty / single_125 / two_local / full_8_ports | 0.6~2.0 ms | 1.1~6.7 ms | 2.0~12.0 ms |
+   | 需 settle(borrow) | single_250 | 1.8 ms | 2.8 ms | 3.8 ms |
+   | 需 settle(cross-MCU) | two_cross_mcu (350 kW) | 2.3 ms | 3.7 ms | 21.4 ms |
+
+   完整數字見 `docs/SPIKE-FR09-REPORT.md` §F09.1.5 量測。
+
+   對應 SPEC 承諾(保守上限,實測有 ~140× 餘裕):
    - 透過 `GET /api/v1/sessions/{id}/snapshot`:P95 ≤ 1 秒
    - 透過 `POST /api/v1/snapshot/compute`:P95 ≤ 1 秒
    - 兩條路徑行為相同(都是 cold start),所以延遲承諾相同
+   - 逾時視為 timeout,回傳 best-effort + warning
 
 **聯動更新範圍**
 
