@@ -1,20 +1,22 @@
-"""Allocate packs → compute VisualSnapshot (Phase 2; FR-02, FR-03, FR-04, FR-05, FR-09).
+"""Compute VisualSnapshot — FR-02, FR-03, FR-04, FR-05, FR-09.
 
-This is a simplified preview allocator used only by the Web UI for immediate
-feedback. The real borrow/return protocol is in the Python core and is wired
-through ``EvcsCoreAdapter`` in Phase 3.
+Phase 3 / Step F09.2: ``compute_snapshot`` now delegates to
+``WebSessionEngine`` (rebuild-engine snapshot strategy, SPEC-WEB-API §3.2).
+Two entry points are exposed:
 
-Allocation rules (deliberately predictable, not an exact simulation):
+- :func:`compute_snapshot_async` — preferred for FastAPI route handlers; uses
+  ``WebSessionEngine.create()`` for full settle-loop convergence.
+- :func:`compute_snapshot` — sync wrapper kept for sync callers
+  (``step_planner``, ``evcs_core_adapter``); internally ``asyncio.run``s the
+  async version.
 
-* Ports are processed in priority order — priority asc, ties broken by port_id;
-  ports without a priority sort after priority-set ports, also by port_id.
-* Each port claims packs from its **home REC BD** first, then walks outward —
-  right neighbor first, then left (SPEC §2.2 borrow priority).
-* Ring (N ≥ 3) wraps around; linear (N = 2) only has one neighbor; N = 1 has none.
-* Each pack goes to at most one port. Excess demand → ``TARGET_EXCEEDS_CAPACITY``-style warning.
+The legacy greedy allocator (``allocate_packs`` and helpers) is **dead code**
+after this step but left in place so the Cleanup step can remove it without
+cascading edits. Do not call it from new code.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, List, Optional, Tuple
 
 from app.constants import (
@@ -41,6 +43,8 @@ from app.services.config_service import (
     module_pack_ranges,
     pick_palette,
 )
+from app.services.validation_service import validate_max_required_within_capacity
+from app.services.web_session_engine import WebSessionEngine
 
 
 PackKey = Tuple[int, int]  # (rec_bd_id, pack_index)
@@ -51,7 +55,9 @@ PackKey = Tuple[int, int]  # (rec_bd_id, pack_index)
 # ---------------------------------------------------------------------------
 
 def _home_order(pack_count: int, port_is_first: bool) -> List[int]:
-    """Anchor-based expansion within home REC BD.
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step.
+
+    Anchor-based expansion within home REC BD.
 
     Port 1 (odd) anchors at pack 0 and expands right (SPEC §5.2).
     Port 2 (even) anchors at last pack and expands left.
@@ -63,7 +69,9 @@ def _home_order(pack_count: int, port_is_first: bool) -> List[int]:
 
 
 def _neighbor_rec_bds(home_bd: int, rec_bd_count: int) -> List[int]:
-    """Return neighbor REC BD ids in SPEC §2.2 borrow priority: right > left.
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step.
+
+    Return neighbor REC BD ids in SPEC §2.2 borrow priority: right > left.
 
     For N=1: none. For N=2: just the other one. For N>=3 (ring): walks outward
     alternating right, left.
@@ -87,6 +95,7 @@ def _neighbor_rec_bds(home_bd: int, rec_bd_count: int) -> List[int]:
 def _search_order(
     port_id: int, rec_bd_count: int, pack_counts: Dict[int, int]
 ) -> List[PackKey]:
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step."""
     home_bd = home_rec_bd_for_port(port_id)
     port_is_first = (port_id - 1) % 2 == 0
 
@@ -103,6 +112,7 @@ def _search_order(
 # ---------------------------------------------------------------------------
 
 def _port_sort_key(cp: CarPortInput) -> Tuple[int, int, int]:
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step."""
     # (has_priority=0 if set else 1, priority_or_0, port_id) — priority-set first, then port_id.
     if cp.priority is not None:
         return (0, cp.priority, cp.port_id)
@@ -112,7 +122,10 @@ def _port_sort_key(cp: CarPortInput) -> Tuple[int, int, int]:
 def allocate_packs(
     car_ports: List[CarPortInput], system: SystemConfig
 ) -> Dict[PackKey, int]:
-    """Return ``{(rec_bd_id, pack_index): owner_port_id}``."""
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step.
+
+    Return ``{(rec_bd_id, pack_index): owner_port_id}``.
+    """
 
     pack_counts = {bd.id: bd.pack_count for bd in system.rec_bds}
     allocation: Dict[PackKey, int] = {}
@@ -143,6 +156,7 @@ def _relay_color(state: str) -> str:
 def _build_output_relays(
     car_ports: List[CarPortInput], allocation: Dict[PackKey, int]
 ) -> List[RelaySnapshot]:
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step."""
     allocated_counts: Dict[int, int] = {}
     for owner in allocation.values():
         allocated_counts[owner] = allocated_counts.get(owner, 0) + 1
@@ -168,6 +182,7 @@ def _build_output_relays(
 def _build_inter_group_relays(
     system: SystemConfig, allocation: Dict[PackKey, int]
 ) -> List[RelaySnapshot]:
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step."""
     relays: List[RelaySnapshot] = []
     for bd in system.rec_bds:
         ranges = module_pack_ranges(bd.module_powers)
@@ -194,6 +209,7 @@ def _build_inter_group_relays(
 def _build_bridge_relays(
     system: SystemConfig, allocation: Dict[PackKey, int]
 ) -> List[RelaySnapshot]:
+    """[DEPRECATED — Phase 3 F09.2] Replaced by WebSessionEngine; will be removed in the Cleanup step."""
     ids = bridge_relay_ids(system.rec_bd_count)
     if not ids:
         return []
@@ -222,109 +238,35 @@ def _build_bridge_relays(
     return relays
 
 
+async def compute_snapshot_async(
+    system: SystemConfig,
+    car_ports: List[CarPortInput],
+    cycle: bool = True,
+) -> VisualSnapshot:
+    """Async entry — preferred for FastAPI route handlers.
+
+    Builds a fresh ``WebSessionEngine`` (rebuild-engine snapshot strategy,
+    SPEC-WEB-API §3.2), drives the actor settle loop to convergence, then
+    extracts a ``VisualSnapshot``. Appends FR-09 capacity warnings (soft —
+    not a hard 422; FR-14 has its own hard ``TARGET_EXCEEDS_CAPACITY``).
+    """
+    engine = await WebSessionEngine.create(system, car_ports)
+    snapshot = engine.to_visual_snapshot(palette_cycle=cycle)
+
+    capacity_warnings = validate_max_required_within_capacity(car_ports, system)
+    if capacity_warnings:
+        snapshot.warnings.extend(w.message for w in capacity_warnings)
+
+    return snapshot
+
+
 def compute_snapshot(
     system: SystemConfig, car_ports: List[CarPortInput], cycle: bool = True
 ) -> VisualSnapshot:
-    """Pure function: config + car_ports → full VisualSnapshot (FR-09 target)."""
+    """Sync entry — kept for sync callers (``step_planner``, ``evcs_core_adapter``).
 
-    palette = pick_palette(system.rec_bd_count, cycle=cycle)
-    color_by_bd = {i + 1: c for i, c in enumerate(palette)}
-
-    allocation = allocate_packs(car_ports, system)
-
-    # --- REC BD snapshots (FR-02) ------------------------------------------
-    rec_bd_snaps: List[RecBdSnapshot] = []
-    for bd in system.rec_bds:
-        used = sum(1 for (b, _) in allocation if b == bd.id)
-        rec_bd_snaps.append(
-            RecBdSnapshot(
-                id=bd.id,
-                color=color_by_bd[bd.id],
-                status="Occupied" if used > 0 else "Idle",
-                power_kw=used * STEP_KW,
-                used_packs=used,
-                total_packs=bd.pack_count,
-            )
-        )
-
-    # --- Pack snapshots (FR-03) --------------------------------------------
-    pack_snaps: List[PackSnapshot] = []
-    for bd in system.rec_bds:
-        for idx in range(bd.pack_count):
-            owner = allocation.get((bd.id, idx))
-            if owner is None:
-                pack_snaps.append(
-                    PackSnapshot(
-                        rec_bd_id=bd.id,
-                        pack_index=idx,
-                        in_use=False,
-                        owner_port_id=None,
-                        color=PACK_COLOR_IDLE,
-                    )
-                )
-            else:
-                # FR-03 interpretation: pack color = consuming port's home REC BD color.
-                owner_home = home_rec_bd_for_port(owner)
-                pack_snaps.append(
-                    PackSnapshot(
-                        rec_bd_id=bd.id,
-                        pack_index=idx,
-                        in_use=True,
-                        owner_port_id=owner,
-                        color=color_by_bd[owner_home],
-                    )
-                )
-
-    # --- Relay snapshots (FR-04) -------------------------------------------
-    relays: List[RelaySnapshot] = []
-    relays.extend(_build_output_relays(car_ports, allocation))
-    relays.extend(_build_inter_group_relays(system, allocation))
-    relays.extend(_build_bridge_relays(system, allocation))
-
-    # --- Car snapshots (FR-05) ---------------------------------------------
-    allocated_per_port: Dict[int, int] = {}
-    for owner in allocation.values():
-        allocated_per_port[owner] = allocated_per_port.get(owner, 0) + STEP_KW
-
-    car_snaps: List[CarSnapshot] = []
-    for cp in sorted(car_ports, key=lambda c: c.port_id):
-        allocated = allocated_per_port.get(cp.port_id, 0)
-        active = cp.max_required > 0 and allocated > 0
-        car_snaps.append(
-            CarSnapshot(
-                port_id=cp.port_id,
-                rec_bd_id=home_rec_bd_for_port(cp.port_id),
-                status="Active" if active else "Inactive",
-                color=CAR_COLOR_ACTIVE if active else CAR_COLOR_INACTIVE,
-                max_required=cp.max_required,
-                allocated_kw=allocated,
-                priority=cp.priority,
-            )
-        )
-
-    # --- Warnings ----------------------------------------------------------
-    warnings: List[str] = []
-    total_requested = sum(cp.max_required for cp in car_ports)
-    total_allocated = sum(allocated_per_port.values())
-    if total_requested > total_allocated:
-        warnings.append(
-            f"Requested {total_requested} kW but only {total_allocated} kW allocated "
-            f"(station capacity {system.total_capacity_kw} kW)."
-        )
-    for cp in car_ports:
-        alloc = allocated_per_port.get(cp.port_id, 0)
-        if cp.max_required > 0 and alloc < cp.max_required:
-            warnings.append(
-                f"Car Port {cp.port_id}: requested {cp.max_required} kW, allocated "
-                f"{alloc} kW (lower priority starved)."
-            )
-
-    return VisualSnapshot(
-        rec_bds=rec_bd_snaps,
-        packs=pack_snaps,
-        relays=relays,
-        cars=car_snaps,
-        total_power_kw=sum(s.power_kw for s in rec_bd_snaps),
-        total_requested_kw=total_requested,
-        warnings=warnings,
-    )
+    Internally wraps :func:`compute_snapshot_async` with ``asyncio.run``.
+    Must NOT be called from inside a running event loop. For async callers,
+    use :func:`compute_snapshot_async` directly.
+    """
+    return asyncio.run(compute_snapshot_async(system, car_ports, cycle=cycle))

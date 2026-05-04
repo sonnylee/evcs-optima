@@ -261,6 +261,36 @@ def validate_target_within_capacity(
     return []
 
 
+def validate_max_required_within_capacity(
+    car_ports: List[CarPortInput], system: SystemConfig
+) -> List[WarningDetail]:
+    """Sum of Max Required across all ports should not exceed total capacity.
+
+    ``SimulationEngine`` silently truncates demand on overload (spike
+    §observation 5), so this is a **warning** emitted into the snapshot,
+    not a hard 422. FR-09 path: warn but proceed; UI displays the warning.
+
+    Distinct from :func:`validate_target_within_capacity` — that one is
+    FR-14 hard-error path because step generation cannot proceed past
+    capacity. FR-09 is mid-edit and a soft warning is the right UX.
+    """
+    total_demand = sum(cp.max_required for cp in car_ports)
+    total_capacity = system.total_capacity_kw
+    if total_demand > total_capacity:
+        return [
+            WarningDetail(
+                code="MAX_REQUIRED_EXCEEDS_CAPACITY",
+                field="car_ports.max_required",
+                message=(
+                    f"sum of Max Required ({total_demand} kW) exceeds total "
+                    f"station capacity ({total_capacity} kW); some demand "
+                    f"will not be met"
+                ),
+            )
+        ]
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Whole-session validation
 # ---------------------------------------------------------------------------
