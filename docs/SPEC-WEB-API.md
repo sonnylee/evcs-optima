@@ -242,8 +242,9 @@ fetch at : "https://www.figma.com/design/KHQ1AFIbh2lBS5m8TSOrv9/EVCS-Vision?node
 
 **互動說明**
 
-- 每次點擊觸發一次計算與更新，點擊後所有聯動元件（FR-09）立即更新
+- 連續點擊後觸發一次計算與更新，點擊後所有聯動元件（FR-09）立即更新
 - 按鈕不需 disabled 狀態，數值受邊界邏輯（FR-08）保護
+- 請求期間按鈕顯示 loading state(視覺回饋,非串行化)
 
 ---
 
@@ -286,6 +287,12 @@ fetch at : "https://www.figma.com/design/KHQ1AFIbh2lBS5m8TSOrv9/EVCS-Vision?node
 **需求描述**
 
 每次使用者透過按鈕調整任一 Car Port 的 Max Required 後，系統需立即重新計算並更新所有聯動視覺元件，確保介面與計算狀態一致。
+
+1. **語義**:每次 `max_required` 變化後,後端建立新的 `SimulationEngine` 實例,讀取其穩態,回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
+2. **延遲**:Spike 量測 engine 建構成本約 0.7~4 ms,加上 schema 翻譯與 snapshot 提取,P95 預估 < 50 ms。對應 SPEC 承諾:
+   - 透過 `GET /api/v1/sessions/{id}/snapshot`:P95 ≤ 1 秒
+   - 透過 `POST /api/v1/snapshot/compute`:P95 ≤ 1 秒
+   - 兩條路徑行為相同(都是 cold start),所以延遲承諾相同
 
 **聯動更新範圍**
 
@@ -432,6 +439,14 @@ Present 欄與 Target 欄均需支援手動輸入數值，讓使用者能自由�
 **需求描述**
 
 使用者完成所有參數輸入後，點擊此按鈕觸發計算引擎，依照 Present 狀態與 Target 目標狀態的差異，產生有序的逐條控制步驟序列。
+1. **語義**:使用者按下 Apply 後,後端產生一條從 Present 狀態演化到 Target 狀態的合法 ControlStepSequence。
+2. **後端實作流程**(rebuild + diff):
+   - 步驟一:用 `present` 值建一個 `SimulationEngine` 實例,讀取其穩態作為 `ControlStepSequence.initial_state`。
+   - 步驟二:用 `target` 值建另一個 `SimulationEngine` 實例,讀取其穩態作為 final state。
+   - 步驟三:diff 兩個 state,根據 SPEC §11 的 relay 切換順序產生 `ControlStepSequence.steps[]`。
+3. **延遲**:P95 ≤ 5 秒(兩個 engine 建構 + diff)。逾時顯示「計算逾時,請重試」並讓 user 留在 edit mode。
+4. **Determinism**:同樣 `(system_config, present, target)` 多次按 Apply 產生**完全相同**的 ControlStepSequence。
+5. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
 
 **觸發條件**
 
@@ -583,109 +598,121 @@ FR-14 計算完成後，選擇介面進入播放器模式，使用者可透過 F
 完成條件：API 可依 Present → Target 產生控制步驟，每個 step 都包含完整 snapshot。
 
 
-### NEW Phase 3 — Reactive SimulationEngine Integration（演算法統一重構）
+### NEW Phase 3 — Rebuild-Engine Snapshot Strategy(演算法統一重構)
 
-> **背景與決策變更**
+> Phase 3 改採 **rebuild-engine snapshot strategy**:每次計算 snapshot 時,從零建立一個 `SimulationEngine`、立即讀取其穩態、用完即丟。整個 web service 的所有配電計算(FR-09、FR-14)透過此策略共用同一套 reactive 演算法(`MCUControl`),`allocate_packs` 與全部 helper 將整支移除。
 >
-> 原 Phase 3 在 web service 層自製了一套 greedy 配電演算法（`allocate_packs` 及其 helper），與既有 `simulation/` 中 `MCUControl` 的 reactive 演算法形成「兩套並存且結果不一致」的局面。
->
-> Phase 3 改為**將整個 web service 的所有配電計算（FR-09 即時響應、FR-14 控制步驟產生）統一改走 `simulation/SimulationEngine`**，使 web UI 顯示的配電與既有實機演化結果一致；`allocate_packs` 及其全部 helper 將於本 Phase 結束時整支移除。
->
-> FR-09 與 FR-14 兩條 user-facing 路徑在 UI 行為上仍維持完全獨立（兩個按鈕、兩個 mode、互不觸發、不共用 store state）；獨立的是**功能**，不是**演算法**。
+> FR-09 與 FR-14 兩條 user-facing 路徑在 UI 行為上維持完全獨立(兩個按鈕、兩個 mode、互不觸發、不共用 store state);獨立的是**功能**,不是**演算法**。
 
-#### 3.1 演算法統一原則
+---
 
-本 Phase 完成後，整個 codebase 只剩**一套**配電演算法，住在 `simulation/modules/mcu_control.py`。所有 web service 的 snapshot 計算與 step 序列產生都透過此演算法完成。
+#### 3.1 核心架構原則
 
-| 路徑 | 觸發 | UI 影響欄位 | 演算法 | 演算法位置 |
-|---|---|---|---|---|
-| **FR-07 / FR-09** | ±25 kW 按鈕 | `max_required`（白底） | Reactive `MCUControl` | `simulation/` + `WebSessionEngine` 包裝 |
-| **FR-14** | Apply and Generate 按鈕 | `present` / `target` / `priority`（灰底） | Reactive `MCUControl`（同一套） | `simulation/` + `WebSessionEngine` 包裝（獨立實例） |
+本 Phase 完成後,整個 codebase 只剩**一套**配電演算法,住在 `simulation/modules/mcu_control.py`。Web service 透過 rebuild-engine 模式取得 snapshot:
 
-兩條路徑在 user-facing 行為上由 mode 切換明確區隔（edit mode vs player mode），但**底層演算法相同**，因此 FR-09 與 FR-14 的視覺結果在「合法配電」這個層級保證一致。
+```
+HTTP request
+   ↓
+build SimulationConfig from web schema
+   ↓
+SimulationEngine(config)                    ← constructor = 穩態 solver
+   ↓
+直接讀 engine.station / engine.mcu_controls / engine.event_log
+   ↓
+轉成 VisualSnapshot 回傳
+   ↓
+engine 物件被 garbage collected
+```
 
-#### 3.2 演算法行為承諾（FR-09 修訂）
+| 路徑 | 觸發 | UI 影響欄位 | 實作 |
+|---|---|---|---|
+| **FR-07 / FR-09** | ±25 kW 按鈕 | `max_required`(白底) | rebuild engine → snapshot |
+| **FR-14** | Apply and Generate 按鈕 | `present` / `target` / `priority`(灰底) | rebuild 兩個 engine(Present / Target),diff 產 step |
 
-本 Phase 修訂 FR-09 的演算法行為承諾，並更新對應 `SPEC-WEB-API.md` §4 FR-09 章節：
+兩條路徑使用同一個 `WebSessionEngine` adapter 工廠,演算法完全相同。
 
-1. **語義**：每次 `max_required` 變化後，後端模擬 EVCS 從**當前**硬體狀態**演化**到新需求下的穩定態，回傳該穩定態的 `VisualSnapshot`。不再是純函式式的 demand→snapshot 一次性計算。
-2. **延遲**：
-   - 透過 `GET /api/v1/sessions/{id}/snapshot`（incremental update）：P95 ≤ 5 秒
-   - 透過 `POST /api/v1/snapshot/compute`（cold start）：P95 ≤ 10 秒
-   - 逾時視為 timeout，回傳 best-effort + warning
-3. **Engine 狀態 reuse**：同一 session 內 reuse 同一個 `WebSessionEngine` 實例，硬體狀態跨請求保留。Session 結束時 dispose engine。
-4. **Reset 機制**：使用者可透過新增的 `POST /sessions/{id}/reset-engine` 強制重置硬體狀態為「全部 OFF」並重新從零演化到當前 demand。
+---
 
-#### 3.3 演算法行為承諾（FR-14 修訂）
+#### 3.2 演算法行為承諾(FR-09 修訂)
+
+本 Phase 修訂 FR-09 的演算法行為承諾,並更新對應 `SPEC-WEB-API.md` §4 FR-09 章節:
+
+1. **語義**:每次 `max_required` 變化後,後端建立新的 `SimulationEngine` 實例,讀取其穩態,回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
+2. **延遲**:Spike 量測 engine 建構成本約 0.7~4 ms,加上 schema 翻譯與 snapshot 提取,P95 預估 < 50 ms。對應 SPEC 承諾:
+   - 透過 `GET /api/v1/sessions/{id}/snapshot`:P95 ≤ 1 秒
+   - 透過 `POST /api/v1/snapshot/compute`:P95 ≤ 1 秒
+   - 兩條路徑行為相同(都是 cold start),所以延遲承諾相同
+
+---
+
+#### 3.3 演算法行為承諾(FR-14 修訂)
 
 本 Phase 修訂 FR-14 的演算法行為承諾,並更新對應 `SPEC-WEB-API.md` §4 FR-14 章節:
 
 1. **語義**:使用者按下 Apply 後,後端產生一條從 Present 狀態演化到 Target 狀態的合法 ControlStepSequence。
-2. **Engine 隔離**:每次按 Apply **新建獨立** `WebSessionEngine` 實例,**不共用** FR-09 路徑的 engine cache。FR-14 結果與 FR-09 點擊歷史完全無關。
-3. **後端實作流程**:
-   - 步驟一:新 engine 從硬體 OFF 狀態啟動,inject demand = `present`,run_until_stable 演化到 Present 穩定態。**此段不 record,不計入 ControlStepSequence。**
-   - 步驟二:保留同一 engine,啟用 step recording,update demand = `target`,run_until_stable 演化到 Target 穩定態。**此段為 ControlStepSequence 內容。**
-   - 步驟三:`ControlStepSequence.initial_state` 為步驟一結束時的 snapshot;`steps[]` 由步驟二期間的 `RelayEventLog` 反推產生。
-4. **延遲**:P95 ≤ 15 秒。逾時顯示「計算逾時,請重試」並讓 user 留在 edit mode。
-5. **步驟數量不固定**:同一 `(system_config, present, target)` 多次按 Apply,產生的 ControlStepSequence 步驟數量可能不同。前端「Step X / N」進度指示器中的 N 必須在每次 Apply 後重新讀取,不可跨 Apply 快取。
-6. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 在「合法配電」層級一致。
+2. **後端實作流程**(rebuild + diff):
+   - 步驟一:用 `present` 值建一個 `SimulationEngine` 實例,讀取其穩態作為 `ControlStepSequence.initial_state`。
+   - 步驟二:用 `target` 值建另一個 `SimulationEngine` 實例,讀取其穩態作為 final state。
+   - 步驟三:diff 兩個 state,根據 SPEC §11 的 relay 切換順序產生 `ControlStepSequence.steps[]`。
+3. **延遲**:P95 ≤ 5 秒(兩個 engine 建構 + diff)。逾時顯示「計算逾時,請重試」並讓 user 留在 edit mode。
+4. **Determinism**:同樣 `(system_config, present, target)` 多次按 Apply 產生**完全相同**的 ControlStepSequence。
+5. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
 
-#### 3.4 前端串行化機制(FR-07 修訂)
+---
 
-為配合 §3.2 的延遲承諾,FR-07 ±25 按鈕新增以下行為:
-
-- 請求 in-flight 期間,**所有 ±25 按鈕 disabled**
-- 後端以 session-level `asyncio.Lock` 確保同一 session 不會有兩個併發的 reactive simulation
-- 5 秒(session)/ 10 秒(無 session)timeout 後顯示「計算逾時,請重試」並重新 enable 按鈕
-
-對應 `SPEC-WEB-UI.md` §6.2.2 `nudgeMaxRequired` action 的實作需更新為:發出請求前 set loading flag、收到 response 後 clear、由 UI layer 依此 flag 控制按鈕 disabled 狀態。
-
-#### 3.5 工作項
+#### 3.4 工作項
 
 | 工作 | 對應需求 | 變動範圍 |
 |---|---|---|
-| 拔除 `MCUControl` 的 `[50,75,75,50] × 4 group` 硬編碼,動態化 `RelayMatrix` / `ModuleAssignment` shape | FR-11 | `simulation/modules/mcu_control.py`、`simulation/hardware/*` |
-| `SimulationEngine` 加 from-state 入口、跳過 `TrafficSimulator`、加 `run_until_stable(timeout_ticks)` | FR-09, FR-14 | `simulation/environment/simulation_engine.py` |
-| `ChargingStation` / `Vehicle` 加靜態車輛機制(凍結 SOC、凍結 EV curve、可動態 set demand) | FR-09, FR-14 | `simulation/hardware/charging_station.py`、`simulation/modules/vehicle.py` |
-| `RelayEventLog` 與其他全域 stateful 物件改成 per-engine 實例 | FR-09, FR-14 | `simulation/environment/*` |
-| 新增 `WebSessionEngine` 包裝層(`update_demands` / `run_until_stable` / `to_visual_snapshot` / `enable_step_recording` / `extract_step_sequence`) | FR-09, FR-14 | `services/evcs-api/app/services/web_session_engine.py`(新檔) |
-| `SessionStore` 加 `engine_cache: Dict[session_id, WebSessionEngine]`,FR-09 session 生命週期內 reuse | FR-09 | `services/evcs-api/app/services/session_service.py` |
-| `compute_snapshot` 改名為 `compute_snapshot_reactive`,內部改呼叫 `WebSessionEngine` | FR-09 | `services/evcs-api/app/services/state_calculation_service.py` |
-| `GET /sessions/{id}/snapshot` 切換為 reactive;`POST /snapshot/compute` 切換為 reactive(cold start,無 cache) | FR-09 | `services/evcs-api/app/api/v1/snapshot.py` |
-| 新增 `POST /sessions/{id}/reset-engine` route | FR-09 | `services/evcs-api/app/api/v1/sessions.py` |
-| `step_planner.plan_transition` 重寫:移除手動 Step A/B 切分(由 `MCUControl.pending_*` 兩階段狀態機自然產出),改由 `RelayEventLog` 反推 step 序列 | FR-14 | `services/evcs-api/app/adapters/step_planner.py` |
-| `evcs_core_adapter.generate_control_steps` 改用獨立新建的 `WebSessionEngine`(不共用 FR-09 engine cache),執行 OFF→Present→Target 流程,僅 record 後半段 | FR-14 | `services/evcs-api/app/adapters/evcs_core_adapter.py` |
-| `evcs_core_adapter._present_warnings` 改用 reactive engine 重新驗證 Present 是否能達成 | FR-14 | `services/evcs-api/app/adapters/evcs_core_adapter.py` |
-| Session-level `asyncio.Lock` 與 timeout 處理(FR-09 session 路徑與 FR-14 路徑均適用) | FR-07, FR-09, FR-14 | `services/evcs-api/app/services/session_service.py` |
+| 新增 `WebSessionEngine` adapter:把 `(SystemConfig, car_ports)` 翻成 `SimulationConfig` + `InitialVehiclePlacement[]`、建 engine、提供 `to_visual_snapshot()` | FR-09, FR-14 | `services/evcs-api/app/services/web_session_engine.py`(新檔) |
+| 設計靜態車輛 placeholder 機制:用 flat curve `[(0, max_required), (100, max_required)]` 加 `freeze_soc=True` 概念(以 web service 端的 helper 處理,不改 Vehicle production code) | FR-09, FR-14 | `web_session_engine.py` 內部 helper |
+| `compute_snapshot` 改名 `compute_snapshot_reactive`,內部改呼叫 `WebSessionEngine` | FR-09 | `services/evcs-api/app/services/state_calculation_service.py` |
+| `GET /sessions/{id}/snapshot` 與 `POST /snapshot/compute` 切換為 reactive(兩條路徑都是 cold start,行為一致) | FR-09 | `services/evcs-api/app/api/v1/snapshot.py` |
+| `step_planner.plan_transition` 改寫:rebuild + diff 策略 — 建兩個 engine、diff state、產 ControlStepSequence | FR-14 | `services/evcs-api/app/adapters/step_planner.py` |
+| `evcs_core_adapter.generate_control_steps` 改用 `WebSessionEngine` 產 initial / final state | FR-14 | `services/evcs-api/app/adapters/evcs_core_adapter.py` |
+| `evcs_core_adapter._present_warnings` 改用 `WebSessionEngine` 重新驗證 Present 是否能達成 | FR-14 | `services/evcs-api/app/adapters/evcs_core_adapter.py` |
+| 強化 `validation_service.validate_target_within_capacity()`:檢查 `Σ max_required ≤ 系統容量`(FR-09 path 也要呼叫,因為 simulation core 不會檢查) | FR-09, FR-14 | `services/evcs-api/app/services/validation_service.py` |
 | **刪除** `allocate_packs` 與所有 greedy 演算法 helper:`_search_order` / `_neighbor_rec_bds` / `_home_order` / `_port_sort_key` / `_build_output_relays` / `_build_inter_group_relays` / `_build_bridge_relays` | — | `services/evcs-api/app/services/state_calculation_service.py` |
-| Phase 0 spike:12 個 scenario 驗證 SimulationEngine 在 demand-only 場景與 FR-14 場景下能穩定收斂 | FR-09, FR-14 | `tests/integration/test_engine_for_web_spike.py`(新檔) |
+| 更新 `SessionStore`:移除原計劃中的 `engine_cache`(不再需要,每次 rebuild)| FR-09 | `services/evcs-api/app/services/session_service.py` |
 
-#### 3.6 完成條件
+**FR-11(MCUControl 拔硬編碼)分階段處理**:
 
-- 既有 222 unit test 在 `[50,75,75,50]` 預設配置下全綠
-- 新增 6 個非預設配置的 test(`[50,50,50,50]`, `[100,100,100,100]`, `[50,75,100,75]`, `[75,75,75]`, `[50,100]`, `[100]`)全綠
-- FR-14 相關 test(`test_control_steps.py`)的「預期序列」更新為「不變式驗證」(不檢查確切步驟內容,檢查 initial_state、final_state 與所有中間 step 都是合法配電)
-- FR-09 P95 延遲:`GET /api/v1/sessions/{id}/snapshot` ≤ 5 秒、`POST /api/v1/snapshot/compute` ≤ 10 秒
-- FR-14 P95 延遲 ≤ 15 秒
-- Phase 0 的 12 個 spike scenario 全部能在 `WebSessionEngine` 上跑通
-- `grep -r "allocate_packs"` 在 `services/evcs-api/` 下只剩 git history,無任何程式碼引用
+- **5/15 demo 階段不做完整 FR-11**,demo 只支援預設配置 `[50,75,75,50] × 4 MCU`
+- **5/16~6/15 Sprint 2 補完 FR-11**:動態化 `RelayMatrix` / `ModuleAssignment` shape、動態化 `GROUPS_PER_MCU`,使 web service 能處理任意 module power 配置
 
-#### 3.7 對應 SPEC 修訂項目
-
-實施本 Phase 同時須更新:
-
-| SPEC 文件 | 章節 | 修訂內容 |
-|---|---|---|
-| `SPEC-WEB-API.md` | §4 FR-07 | 加入「請求 in-flight 期間按鈕 disabled、5 秒 timeout」行為 |
-| `SPEC-WEB-API.md` | §4 FR-09 | 改寫為 reactive 演算法承諾(§3.2 四點) |
-| `SPEC-WEB-API.md` | §4 FR-14 | 加入「engine 隔離」、「OFF→Present→Target 但僅 record 後半段」、「步驟數量不固定」、「P95 ≤ 15 秒」(§3.3 六點) |
-| `SPEC-WEB-API.md` | §3 endpoint 列表 | 新增 `POST /sessions/{id}/reset-engine` |
-| `SPEC-WEB-UI.md` | §6.2.2 `nudgeMaxRequired` | 加入 loading flag 與按鈕 disabled 狀態管理 |
-| `SPEC-WEB-UI.md` | §3.3 CarPortPanel | ±25 按鈕視覺加入 loading / disabled 樣式 |
-| `SPEC-WEB-UI.md` | §3.5 StepPlayer | 進度指示器 N 不快取跨 Apply、每次 Apply 後重新讀取 |
-| `CLAUDE.md` | architecture decisions | 新增 ADR:「Web service 統一使用 `MCUControl` reactive 演算法、淘汰 `allocate_packs`」 |
+> 本 Phase 文件保留 FR-11 工作項,但執行時程切到 Sprint 2。
 
 ---
+
+#### 3.5 完成條件
+
+- 既有 222 unit test 在 `[50,75,75,50]` 預設配置下全綠
+- FR-09 相關 test(`test_snapshot.py`)的「預期值」更新為新演算法的合理輸出(spike 證明 engine 建構即穩態)
+- FR-14 相關 test(`test_control_steps.py`)的「預期序列」更新為新演算法的合理輸出
+- FR-09 P95 延遲 ≤ 1 秒(兩條路徑)
+- FR-14 P95 延遲 ≤ 3 秒
+- 18 個 spike scenario 在新 `WebSessionEngine` 上仍全部通過(回歸測試)
+- `grep -r "allocate_packs"` 在 `services/evcs-api/` 下只剩 git history,無任何程式碼引用
+
+---
+
+#### 3.6 對應實作 Step(5/15 demo 版)
+
+| Step | 範圍 | 工時 |
+|---|---|---|
+| Step F09.1 | `WebSessionEngine` adapter:schema 翻譯 + engine 建構 + snapshot 提取 | 0.5 天 |
+| Step F09.2 | `compute_snapshot_reactive` 改寫 + 強化 `validation_service` | 0.5 天 |
+| Step F09.3 | FastAPI snapshot route 切換 + 整合測試 | 0.5 天 |
+| Step F09.5 | UI 串通:ConfigPanel / TopologyView / CarPortPanel + ±25 按鈕 + loading state | 2 天 |
+| Step F09.6 | FR-09 端到端整合測試 + bug fix | 0.5 天 |
+| **FR-09 小計** | | **4 天** |
+| Step F14.1 | `step_planner.plan_transition` 重寫(rebuild + diff) | 1 天 |
+| Step F14.2 | `evcs_core_adapter` 改用 `WebSessionEngine` | 0.5 天 |
+| Step F14.3 | UI Apply 按鈕 + StepPlayer | 1.5 天 |
+| Step F14.4 | FR-14 端到端整合測試 + bug fix | 0.5 天 |
+| **FR-14 小計** | | **3.5 天** |
+| Step Cleanup | 刪除 `allocate_packs` + 確認無 caller + 文件更新 | 0.5 天 |
+| **Sprint 1 小計(5/15 demo)** | | **8 天** |
 
 ### Phase 4 — Bun / React Web UI Implementation
 

@@ -158,7 +158,7 @@ See `associate/TEST-SPEC.md` for the full test specification (SPEC §19).
 
 ## Web & API Layer (full spec: docs/SPEC-WEB-API.md; UI spec: docs/SPEC-WEB-UI.md)
 
-Three-tier architecture wrapping the existing Python simulation core. `services/evcs-api/` exists (Phases 1–3 complete: FastAPI foundation, snapshot API, EvcsCoreAdapter producing `ControlStepSequence` from Present→Target with SPEC §11 ordering). `web/evcs-ui/` has not been created yet — Phase 4 follows SPEC-WEB-UI.md and the layout below.
+Three-tier architecture wrapping the existing Python simulation core. `services/evcs-api/` exists (Phases 1–2 complete; Phase 3 has been redefined as a **rebuild-engine snapshot strategy** — see "Phase 3 strategy" below). `web/evcs-ui/` has not been created yet — Phase 4 follows SPEC-WEB-UI.md and the layout below.
 
 1. **Bun Web UI** (`web/evcs-ui/`, React + TypeScript) — MCU topology view, config panel, Car Port input panel, step player. Entry points: `src/api/evcsApiClient.ts`, `src/stores/evcsStore.ts`, `src/components/{topology, config-panel, car-port-panel, step-player}/`.
 2. **FastAPI Service** (`services/evcs-api/`) — REST facade + validation + session store + core adapter. Routes under `app/api/v1/`: `health`, `constants`, `sessions`, `validation`, `snapshot`, `control_steps`. Pydantic schemas in `app/schemas/`; core integration in `app/adapters/evcs_core_adapter.py`.
@@ -183,13 +183,18 @@ Three-tier architecture wrapping the existing Python simulation core. `services/
 
 1. **FastAPI Foundation** — project skeleton, `/health` `/constants` `/palette`, Pydantic schemas, validation service, session store.
 2. **Topology & Visual Snapshot API** — REC BD / 25 kW Pack / Relay / Car snapshot, priority validation. Exit: any Max Required change returns a complete `VisualSnapshot`.
-3. **Python Core Adapter** — `EvcsCoreAdapter` maps Present→Target to step sequence; unreasonable-Present warning; Target-over-capacity check.
+3. **Rebuild-Engine Snapshot Strategy** (NEW Phase 3, replaces the old "Python Core Adapter" plan) — every snapshot computation builds a fresh `SimulationEngine`, reads its steady state, and discards it. One algorithm (`MCUControl`) serves both FR-09 and FR-14 via a shared `WebSessionEngine` adapter; the legacy `allocate_packs` + greedy helpers are deleted.
 4. **Bun/React UI** — topology view, config panel, car-port input panel, Apply-and-Generate flow, step player, error display.
 
-### Behavior that is load-bearing for the core adapter
+### Phase 3 strategy — Rebuild-engine snapshot (load-bearing)
 
-- Control steps must obey the existing hardware constraints (SPEC §11): ≥125 kW before closing Output relay, Output relay stays Closed mid-charge, inter-Group / bridge relays close before Output on arrival and open before Output on departure. The Phase 3 adapter (`services/evcs-api/app/adapters/step_planner.py`) enforces these via snapshot post-processing — it does **not** invoke the time-driven `simulation/` core, which is incompatible with stateless step generation and does not support FR-11 user-configurable per-REC-BD module powers.
-- Priority (FR-16) replaces the default top-down Car-ID allocation order; the adapter feeds it into the allocation strategy in `state_calculation_service.compute_snapshot`.
+- **Single algorithm, two paths**: FR-09 (Max Required nudge) and FR-14 (Apply and Generate) both go through `services/evcs-api/app/services/web_session_engine.py::WebSessionEngine`, which translates `(SystemConfig, car_ports)` into a `SimulationConfig` + `InitialVehiclePlacement[]`, builds a `SimulationEngine` (constructor solves to steady state), and reads `engine.station / engine.mcu_controls / engine.event_log` into a `VisualSnapshot`. Engines are throwaway — no state crosses requests.
+- **FR-09 path** (`compute_snapshot_reactive` in `state_calculation_service.py`, exposed via `GET /sessions/{id}/snapshot` and `POST /snapshot/compute`): one rebuild → one snapshot. P95 ≤ 1 s.
+- **FR-14 path** (`step_planner.plan_transition`, called by `evcs_core_adapter.generate_control_steps`): rebuild + diff — build a Present engine and a Target engine, diff their states, emit a `ControlStepSequence` whose ordering obeys SPEC §11 (≥125 kW before closing Output, Output stays Closed mid-charge, inter-Group/bridge close before Output on arrival, open before Output on departure). Determinism: same `(system_config, present, target)` → identical sequence. P95 ≤ 5 s.
+- **Visual consistency**: because both paths share the same algorithm, the FR-09 edit-mode snapshot for a given demand matches the FR-14 player-mode snapshot at the corresponding step.
+- **Priority (FR-16)** is fed into `WebSessionEngine`'s placement order, replacing the default top-down Car-ID allocation.
+- **Deleted**: `allocate_packs`, `_search_order`, `_neighbor_rec_bds`, `_home_order`, `_port_sort_key`, `_build_output_relays`, `_build_inter_group_relays`, `_build_bridge_relays` in `state_calculation_service.py`, plus `engine_cache` in `session_service.py`. `grep -r "allocate_packs"` under `services/evcs-api/` should return nothing.
+- **FR-11 scope split**: 5/15 demo locks to the default `[50, 75, 75, 50] × 4 MCU` config; full FR-11 (dynamic `RelayMatrix` / `ModuleAssignment` shapes, dynamic `GROUPS_PER_MCU`) is deferred to Sprint 2 (5/16–6/15).
 
 ### Web UI layer (Phase 4 — full spec: docs/SPEC-WEB-UI.md)
 
