@@ -67,15 +67,6 @@ _DEFAULT_TARGET_SOC = 90.0
 _CONVERGE_TIMEOUT_TICKS = 200
 _CONVERGE_STABLE_WINDOW = 5
 
-# SPEC §11: minimum guaranteed power per Output. When any port has
-# demand > 0 the Output relay engages and physically delivers at least
-# this much. The simulation engine's reactive return logic would
-# otherwise shrink an active port's allocation below 125 kW for low
-# user demand; we prevent that by feeding the engine
-# max(user_input, 125) for every active port. The user-facing
-# max_required in the snapshot still reflects the original input.
-MIN_ENGAGE_POWER_KW = 125
-
 
 def _group_to_pack_range(rec_bd_config: RecBdConfig, group_local_idx: int) -> Tuple[int, int]:
     """Return ``(pack_start, pack_end_exclusive)`` for a group within its REC BD.
@@ -184,15 +175,12 @@ class WebSessionEngine:
         for port in car_ports:
             if port.max_required <= 0:
                 continue
-            # SPEC §11 hardware floor: any active port must receive
-            # at least 125 kW. Engine sees the floored value; the
-            # snapshot still reports user-facing max_required.
-            engine_kw = max(port.max_required, MIN_ENGAGE_POWER_KW)
+            kw = port.max_required
             name = f"web_port_{port.port_id}"
             profiles[port.port_id] = VehicleProfile(
                 name=name,
                 battery_capacity_kwh=_DEFAULT_BATTERY_KWH,
-                soc_power_curve=self._flat_curve(engine_kw),
+                soc_power_curve=self._flat_curve(kw),
             )
             placements.append(
                 InitialVehiclePlacement(

@@ -93,67 +93,6 @@ class TestSnapshotComputeRoute:
         snap = r.json()
         assert not any("exceeds" in w.lower() for w in snap["warnings"])
 
-    def test_low_demand_engages_with_125kw_floor(self, client: TestClient):
-        """SPEC §11: even max_required=50 engages and gets 125 kW (hardware floor)."""
-        body = {
-            "system_config": _cfg_4mcu(),
-            "car_ports": _full_ports([(1, 50)]),
-        }
-        r = client.post("/api/v1/snapshot/compute", json=body)
-        assert r.status_code == 200
-        snap = r.json()
-        car1 = next(c for c in snap["cars"] if c["port_id"] == 1)
-        assert car1["status"] == "Active"
-        assert car1["allocated_kw"] >= 125
-        assert car1["max_required"] == 50  # user input preserved
-
-    def test_at_min_engage_125_kw(self, client: TestClient):
-        """Boundary: exactly 125 kW engages cleanly."""
-        body = {
-            "system_config": _cfg_4mcu(),
-            "car_ports": _full_ports([(1, 125)]),
-        }
-        r = client.post("/api/v1/snapshot/compute", json=body)
-        assert r.status_code == 200
-        snap = r.json()
-        car1 = next(c for c in snap["cars"] if c["port_id"] == 1)
-        assert car1["status"] == "Active"
-        assert car1["allocated_kw"] >= 125
-
-    def test_low_demand_with_neighbor_borrow(self, client: TestClient):
-        """P1=50 (engages at 125) + P2=300 (cross-MCU borrow) — both correct."""
-        body = {
-            "system_config": _cfg_4mcu(),
-            "car_ports": _ports([
-                (1, 50), (2, 300), (3, 0), (4, 0),
-                (5, 0), (6, 0), (7, 0), (8, 0),
-            ]),
-        }
-        r = client.post("/api/v1/snapshot/compute", json=body)
-        assert r.status_code == 200
-        snap = r.json()
-        cars_by_id = {c["port_id"]: c for c in snap["cars"]}
-
-        assert cars_by_id[1]["status"] == "Active"
-        assert cars_by_id[1]["allocated_kw"] >= 125
-        assert cars_by_id[1]["max_required"] == 50
-
-        assert cars_by_id[2]["status"] == "Active"
-        assert cars_by_id[2]["allocated_kw"] >= 300
-
-    def test_zero_demand_stays_idle(self, client: TestClient):
-        """max_required=0 must not engage — distinct from low-demand."""
-        body = {
-            "system_config": _cfg_4mcu(),
-            "car_ports": _full_ports([]),  # all zeros
-        }
-        r = client.post("/api/v1/snapshot/compute", json=body)
-        assert r.status_code == 200
-        snap = r.json()
-        for c in snap["cars"]:
-            assert c["status"] == "Inactive"
-            assert c["allocated_kw"] == 0
-
 
 # ── GET /sessions/{id}/snapshot ───────────────────────────────────────────
 
