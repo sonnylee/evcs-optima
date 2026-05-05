@@ -25,7 +25,7 @@ def test_3mcu_bridges_in_window():
     rm = RelayMatrix(mcu_id=0, num_mcus=3)
     # Right bridge: MCU0.G3 ↔ MCU1.G0 (abs 3 ↔ 4)
     assert rm.is_legal(3, 4) is True
-    # Ring wrap bridge: MCU2.G3 ↔ MCU0.G0 (abs 11 ↔ 0) — 3-MCU is ring
+    # Ring wrap bridge: MCU2.G3 ↔ MCU0.G0 (abs 11 ↔ 0); owner = MCU0 (left bridge)
     assert rm.is_legal(11, 0) is True
     # MCU1↔MCU2 bridge (abs 7 ↔ 8) — visible only from MCU1 or MCU2's window,
     # NOT from MCU0's window (MCU2 is in slot[0] left and MCU1 in slot[2] right;

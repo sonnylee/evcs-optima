@@ -112,9 +112,10 @@ class TestVisionOutput:
         assert vo._relay_labels["MCU0_R23"] == "M1.R4"
 
     def test_bridge_label_ring_wrap(self):
-        # 3-MCU ring: MCU2_BR → M1.R1
+        # After SPEC §3 alignment flip: MCUm_BR is MCUm's OWN left bridge,
+        # so MCU2_BR labels as M3.R1 (m+1 column).
         vo = VisionOutput(num_mcus=3)
-        assert vo._relay_labels["MCU2_BR"] == "M1.R1"
+        assert vo._relay_labels["MCU2_BR"] == "M3.R1"
 
     # ── Headers ───────────────────────────────────────────────────────────────
     def test_header_count_1mcu(self):
@@ -208,19 +209,22 @@ class TestVisionOutput:
         r2_idx = headers.index("M1.R2")
         assert rows[2][r2_idx] == "ON"
 
-    def test_csv_m1_r1_hardcoded_off_bug(self, tmp_path):
-        """Line 184: m==0 branch hardcodes OFF — documents the known ring bug."""
+    def test_csv_bridge_state_flip_aligned(self, tmp_path):
+        """After SPEC §3 alignment flip: MCU2_BR is MCU2's own left bridge,
+        so setting MCU2_BR=ON should populate M3.R1 (not M1.R1)."""
         vo = VisionOutput(num_mcus=3)
-        rs = {"MCU2_BR": "ON"}  # ring bridge should appear as M1.R1
+        rs = {"MCU2_BR": "ON"}
         _vo_snapshot(vo, relay_state=rs)
         path = str(tmp_path / "trace.csv")
         vo.write_csv(path)
         with open(path) as f:
             rows = list(_csv.reader(f))
         headers = rows[0]
-        r1_idx = headers.index("M1.R1")
-        # Bug: currently hardcoded OFF; expected ON after fix
-        assert rows[2][r1_idx] == "OFF"   # documents current (buggy) behaviour
+        # MCU2_BR is MCU2's left bridge → M3.R1 column.
+        assert rows[2][headers.index("M3.R1")] == "ON"
+        # The other R1 columns remain OFF (their own _BR keys not set).
+        assert rows[2][headers.index("M1.R1")] == "OFF"
+        assert rows[2][headers.index("M2.R1")] == "OFF"
 
     # ── write_boundary_log ────────────────────────────────────────────────────
     def test_boundary_log_written(self, tmp_path):

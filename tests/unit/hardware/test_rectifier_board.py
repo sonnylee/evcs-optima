@@ -12,16 +12,17 @@ def test_basic_construction():
     assert len(board.inter_group_relays) == 3
     assert len(board.output_relays) == 2
     assert len(board.outputs) == 2
-    assert board.right_bridge_relay is None
+    assert board.left_bridge_relay is None
     # Per-MCU instances are owned by the board.
     assert board.relay_matrix.mcu_id == 0
     assert board.module_assignment.mcu_id == 0
 
 
-def test_with_right_bridge():
+def test_with_left_bridge():
     el = RelayEventLog()
-    board = RectifierBoard(mcu_id=0, event_log=el, num_mcus=3, has_right_bridge=True)
-    assert board.right_bridge_relay is not None
+    # For N>=3 ring every MCU owns a left bridge — keep mcu_id=0 to verify ring case.
+    board = RectifierBoard(mcu_id=0, event_log=el, num_mcus=3, has_left_bridge=True)
+    assert board.left_bridge_relay is not None
 
 
 def test_step_passthrough():
@@ -42,7 +43,7 @@ def test_get_status():
 def test_per_mcu_isolation():
     """Two boards in the same station hold INDEPENDENT data structures."""
     el = RelayEventLog()
-    b0 = RectifierBoard(mcu_id=0, event_log=el, num_mcus=4, has_right_bridge=True)
-    b1 = RectifierBoard(mcu_id=1, event_log=el, num_mcus=4, has_right_bridge=True)
+    b0 = RectifierBoard(mcu_id=0, event_log=el, num_mcus=4, has_left_bridge=True)
+    b1 = RectifierBoard(mcu_id=1, event_log=el, num_mcus=4, has_left_bridge=True)
     assert b0.module_assignment is not b1.module_assignment
     assert b0.relay_matrix is not b1.relay_matrix

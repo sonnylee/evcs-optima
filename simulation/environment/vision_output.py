@@ -22,7 +22,7 @@ class VisionOutput:
 
     Per-MCU column meanings:
       - M{n}.O1 / M{n}.O2 : the output power-switch relay state (ON/OFF).
-      - M{n}.R1           : right bridge relay to the next MCU (SPEC §2.2).
+      - M{n}.R1           : left bridge relay from prev MCU (SPEC §2.2 / §3).
       - M{n}.R2 / R3 / R4 : inter-group relays (G0-G1, G1-G2, G2-G3).
 
     Blocks CSV output when the Validator reports failures.
@@ -44,12 +44,10 @@ class VisionOutput:
             # Output power-switch relays are exposed under M{n}.O{k}
             labels[f"{prefix}_R_O0"] = f"{mlab}.O1"
             labels[f"{prefix}_R_O1"] = f"{mlab}.O2"
-            # 4 relays per MCU: 3 inter-group + 1 bridge
-            # MCUm's right bridge is the same physical wire as MCU(m+1)'s R1
-            # (left side). Label it on the right-hand MCU to preserve the
-            # "R1 = left bridge of this MCU" convention.
-            right_mlab = f"M{((m + 1) % num_mcus) + 1}"
-            labels[f"{prefix}_BR"]   = f"{right_mlab}.R1"
+            # 4 relays per MCU: 3 inter-group + 1 left bridge.
+            # After the SPEC §3 alignment flip, MCUm's _BR is its own left
+            # bridge — no remapping needed; M{m+1}.R1 column is its own row.
+            labels[f"{prefix}_BR"]   = f"{mlab}.R1"
             labels[f"{prefix}_R01"]  = f"{mlab}.R2"
             labels[f"{prefix}_R12"]  = f"{mlab}.R3"
             labels[f"{prefix}_R23"]  = f"{mlab}.R4"
@@ -175,16 +173,10 @@ class VisionOutput:
             # O1/O2 = output power-switch relay states
             out.append(row["relay_state"].get(f"{prefix}_R_O0", "OFF"))
             out.append(row["relay_state"].get(f"{prefix}_R_O1", "OFF"))
-            # R1 = left bridge (= previous MCU's right bridge); R2..R4 = 3 inter-group.
-            # MCUm's R1 column maps to MCU(m-1)_BR to match the label side
-            # (_build_relay_labels), which names every bridge after the right-hand MCU.
-            if m == 0:
-                if self.num_mcus >= 3:
-                    out.append(row["relay_state"].get(f"MCU{self.num_mcus-1}_BR", "OFF"))
-                else:
-                    out.append("OFF")
-            else:
-                out.append(row["relay_state"].get(f"MCU{m-1}_BR", "OFF"))
+            # R1 = own left bridge (post-flip). MCUm's R1 column = MCUm_BR
+            # directly — ring-wrap special case is no longer needed because
+            # ownership is on the right side of every wire (SPEC §3).
+            out.append(row["relay_state"].get(f"{prefix}_BR", "OFF"))
             out.append(row["relay_state"].get(f"{prefix}_R01", "OFF"))
             out.append(row["relay_state"].get(f"{prefix}_R12", "OFF"))
             out.append(row["relay_state"].get(f"{prefix}_R23", "OFF"))

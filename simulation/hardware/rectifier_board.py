@@ -30,7 +30,7 @@ class RectifierBoard(SimulationModule):
         mcu_id: int,
         event_log: RelayEventLog,
         num_mcus: int = 1,
-        has_right_bridge: bool = False,
+        has_left_bridge: bool = False,
     ):
         self.mcu_id = mcu_id
         self.num_mcus = num_mcus
@@ -82,25 +82,28 @@ class RectifierBoard(SimulationModule):
                 matrix_idx_b=g_base + group_idx,
             ))
 
-        # Build right bridge relay (to next MCU) if applicable
-        self.right_bridge_relay: Relay | None = None
-        if has_right_bridge and num_mcus > 1:
-            next_mcu = (mcu_id + 1) % num_mcus
-            self.right_bridge_relay = Relay(
-                relay_id=f"{prefix}_BR",
+        # Build left bridge relay (from prev MCU) if applicable.
+        # Per SPEC §3 the bridge is on the LEFT side of each MCU; ownership
+        # therefore lives on the right-hand MCU of every bridge wire.
+        self.left_bridge_relay: Relay | None = None
+        if has_left_bridge and num_mcus > 1:
+            # +N defensive mod (SPEC §10): avoids C-port negative-mod surprise.
+            prev_mcu = (mcu_id - 1 + num_mcus) % num_mcus
+            self.left_bridge_relay = Relay(
+                relay_id=f"{prefix}_BR",  # _BR suffix kept (orientation-agnostic)
                 relay_type=RelayType.INTER_GROUP,
                 is_cross_mcu=True,
                 event_log=event_log,
-                node_a=self.groups[3].group_id,
-                node_b=f"MCU{next_mcu}_G0",
+                node_a=f"MCU{prev_mcu}_G3",
+                node_b=self.groups[0].group_id,
                 relay_matrix=self.relay_matrix,
-                matrix_idx_a=g_base + 3,
-                matrix_idx_b=next_mcu * 4,
+                matrix_idx_a=prev_mcu * 4 + 3,
+                matrix_idx_b=g_base + 0,
             )
 
         self.relays = list(self.output_relays) + list(self.inter_group_relays)
-        if self.right_bridge_relay is not None:
-            self.relays.append(self.right_bridge_relay)
+        if self.left_bridge_relay is not None:
+            self.relays.append(self.left_bridge_relay)
 
         # Build 2 Outputs with fixed Phase 1 allocation
         # O0: anchor=G0, groups={G0, G1}

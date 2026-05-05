@@ -13,7 +13,7 @@ envelope raises ``ValueError`` with an explicit "Sprint 1" message.
 Spike-validated state-read points (Sprint 2 must update if these change):
   - ``engine.station.boards[i].output_relays[local_idx]``
   - ``engine.station.boards[i].inter_group_relays[i]``
-  - ``engine.station.boards[i].right_bridge_relay``
+  - ``engine.station.boards[i].left_bridge_relay``
   - ``engine.station.boards[i].outputs[local_idx].available_power_kw``
   - ``engine.station.boards[i].module_assignment.get_owner(abs_group)``
   - ``engine._all_outputs[port_id-1]``
@@ -343,13 +343,16 @@ class WebSessionEngine:
                         rec_bd_id=rec_bd_id,
                     )
                 )
-        # Bridge relays → "B_{a}_{b}" (right bridge owned by left MCU).
+        # Bridge relays → "B_{a}_{b}" (after SPEC §3 flip the bridge owner
+        # is the right-side MCU; ID label keeps the legacy {prev}_{this}
+        # numbering convention so existing snapshots / tests still pass).
         for mcu_idx, board in enumerate(self._engine.station.boards):
-            if board.right_bridge_relay is None:
+            if board.left_bridge_relay is None:
                 continue
-            a = mcu_idx + 1
-            b = (mcu_idx + 1) % num_mcus + 1
-            state = self._state_label(board.right_bridge_relay.state)
+            prev_mcu_idx = (mcu_idx - 1 + num_mcus) % num_mcus
+            a = prev_mcu_idx + 1   # left side of the ID label
+            b = mcu_idx + 1        # right side of the ID label = new owner
+            state = self._state_label(board.left_bridge_relay.state)
             relays.append(
                 RelaySnapshot(
                     id=f"B_{a}_{b}",

@@ -187,7 +187,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Session Snapshot */
+        /**
+         * Session Snapshot
+         * @description FR-09: stateful snapshot for an existing session.
+         */
         get: operations["session_snapshot_api_v1_sessions__session_id__snapshot_get"];
         put?: never;
         post?: never;

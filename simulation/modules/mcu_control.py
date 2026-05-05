@@ -867,8 +867,8 @@ class MCUControl(Actor, SimulationModule):
                 needed.add(r)
 
         all_relays = list(self._board.output_relays) + list(self._board.inter_group_relays)
-        if self._board.right_bridge_relay is not None:
-            all_relays.append(self._board.right_bridge_relay)
+        if self._board.left_bridge_relay is not None:
+            all_relays.append(self._board.left_bridge_relay)
 
         # SPEC §11: never open an Output relay as a side-effect of a borrow/
         # return resync. Output relays are only opened by _finalize_departure
@@ -921,18 +921,20 @@ class MCUControl(Actor, SimulationModule):
             if gb <= p <= gb + 2 and pn == p + 1:
                 relays.append(self._board.inter_group_relays[p - gb])
                 continue
-            # Right bridge I own (my last local G → next MCU's first local G).
-            if self._board.right_bridge_relay is not None and p == gb + GROUPS_PER_MCU - 1:
+            # Left bridge I own (prev MCU's last local G → my first local G).
+            if self._board.left_bridge_relay is not None and pn == gb:
+                prev_gb3 = (gb - 1 + N) % N if self._ring_enabled else gb - 1
+                if p == prev_gb3:
+                    relays.append(self._board.left_bridge_relay)
+                    continue
+            # Right bridge (owned by next MCU; fetched via station).
+            # bridge_relay_between(self._mcu_id) returns the bridge wire
+            # between self and self+1; after the flip its owner is the
+            # right MCU (next_mcu.left_bridge_relay).
+            if self._station is not None and p == gb + GROUPS_PER_MCU - 1:
                 next_g0 = (gb + GROUPS_PER_MCU) % N if self._ring_enabled else gb + GROUPS_PER_MCU
                 if pn == next_g0:
-                    relays.append(self._board.right_bridge_relay)
-                    continue
-            # Left bridge (owned by prev MCU; fetched via station).
-            if self._station is not None and pn == gb:
-                prev_gb3 = (gb - 1) % N if self._ring_enabled else gb - 1
-                if p == prev_gb3:
-                    prev_mcu = (self._mcu_id - 1 + self._num_mcus) % self._num_mcus
-                    br = self._station.bridge_relay_between(prev_mcu)
+                    br = self._station.bridge_relay_between(self._mcu_id)
                     if br is not None:
                         relays.append(br)
 

@@ -137,6 +137,7 @@ export function TopologyView() {
   }
 
   const recBdIds = snapshot.rec_bds.map((b) => b.id);
+  const isRing = snapshot.rec_bds.length >= 3;
 
   return (
     <div className="flex flex-col gap-1" data-testid="topology-view">
@@ -150,17 +151,31 @@ export function TopologyView() {
         );
         const cars = groupCars(snapshot, recBd.id);
 
-        const nextId = recBdIds[idx + 1];
-        const bridgeBelow = nextId
-          ? snapshot.relays.find(
+        // After SPEC §3 flip: each REC BD owns its LEFT bridge.
+        // BD 1 in a ring has the wrap (`B_{last}_{first}`) as its left bridge;
+        // in linear N=2 BD 0 has no left bridge (bridgeAbove undefined).
+        let bridgeAbove: typeof snapshot.relays[number] | undefined;
+        if (idx === 0) {
+          if (isRing) {
+            const last = recBdIds[recBdIds.length - 1];
+            bridgeAbove = snapshot.relays.find(
               (r) =>
                 r.kind === 'bridge' &&
-                (r.id === `B_${recBd.id}_${nextId}` || r.id === `B_${nextId}_${recBd.id}`),
-            )
-          : undefined;
+                (r.id === `B_${last}_${recBd.id}` || r.id === `B_${recBd.id}_${last}`),
+            );
+          }
+        } else {
+          const prevId = recBdIds[idx - 1];
+          bridgeAbove = snapshot.relays.find(
+            (r) =>
+              r.kind === 'bridge' &&
+              (r.id === `B_${prevId}_${recBd.id}` || r.id === `B_${recBd.id}_${prevId}`),
+          );
+        }
 
         return (
           <div key={recBd.id}>
+            {bridgeAbove && <BridgeRelay bridge={bridgeAbove} />}
             <RecBdRow
               recBd={recBd}
               packs={packs}
@@ -168,28 +183,9 @@ export function TopologyView() {
               interGroupRelays={interGroupRelays}
               cars={cars}
             />
-            {bridgeBelow && <BridgeRelay bridge={bridgeBelow} />}
           </div>
         );
       })}
-
-      {snapshot.rec_bds.length >= 3 &&
-        (() => {
-          const first = recBdIds[0];
-          const last = recBdIds[recBdIds.length - 1];
-          const wrap = snapshot.relays.find(
-            (r) =>
-              r.kind === 'bridge' &&
-              (r.id === `B_${last}_${first}` || r.id === `B_${first}_${last}`),
-          );
-          if (!wrap) return null;
-          return (
-            <div className="text-center text-[10px] text-slate-500 mt-2">
-              Ring wrap (last ↔ first)
-              <BridgeRelay bridge={wrap} />
-            </div>
-          );
-        })()}
 
       {snapshot.warnings.length > 0 && (
         <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 mt-3">

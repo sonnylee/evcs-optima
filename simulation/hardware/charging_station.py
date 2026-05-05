@@ -19,23 +19,23 @@ class ChargingStation(SimulationModule):
         self.num_mcus = num_mcus
         self.event_log = event_log if event_log is not None else RelayEventLog()
 
-        # Determine which MCUs own a right bridge:
-        # - ring (num_mcus >= 3): every MCU owns its right bridge (wrap-around)
-        # - linear (num_mcus == 2): MCU 0 owns the only bridge
+        # Determine which MCUs own a left bridge (SPEC §3 alignment):
+        # - ring (num_mcus >= 3): every MCU owns its left bridge (wrap-around)
+        # - linear (num_mcus == 2): MCU 1 (right side) owns the only bridge
         # - single MCU: no bridges
-        def has_right_bridge(i: int) -> bool:
+        def has_left_bridge(i: int) -> bool:
             if num_mcus <= 1:
                 return False
             if num_mcus >= 3:
                 return True
-            return i < num_mcus - 1
+            return i > 0
 
         self.boards: list[RectifierBoard] = [
             RectifierBoard(
                 mcu_id=i,
                 event_log=self.event_log,
                 num_mcus=num_mcus,
-                has_right_bridge=has_right_bridge(i),
+                has_left_bridge=has_left_bridge(i),
             )
             for i in range(num_mcus)
         ]
@@ -50,9 +50,16 @@ class ChargingStation(SimulationModule):
             b.initialize_relays(dt_index)
 
     def bridge_relay_between(self, left_mcu: int):
-        """Return the bridge relay owned by `left_mcu` (i.e., left_mcu ↔ left_mcu+1)."""
+        """Return the bridge relay between `left_mcu` and `left_mcu + 1`.
+
+        Note: after the SPEC §3 alignment flip, ownership lives on the right
+        side (`left_mcu + 1`). The argument keeps the legacy ``left_mcu`` name
+        for backward compatibility with all callers; only the lookup target
+        changed (``boards[right_mcu].left_bridge_relay``).
+        """
         if 0 <= left_mcu < len(self.boards):
-            return self.boards[left_mcu].right_bridge_relay
+            right_mcu = (left_mcu + 1) % len(self.boards)
+            return self.boards[right_mcu].left_bridge_relay
         return None
 
     # ── Per-MCU MA mirror sync (SPEC §10) ─────────────────────────────
