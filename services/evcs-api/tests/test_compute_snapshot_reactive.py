@@ -111,3 +111,15 @@ class TestComputeSnapshotReactive:
             "exceeds" in w.lower() and "max required" in w.lower()
             for w in snap.warnings
         ), f"unexpected capacity warning under capacity: {snap.warnings}"
+
+    def test_below_min_demand_engages_at_125(self, basic_system):
+        """SPEC §11: 0 < max_required < 125 still engages, allocated floored to 125."""
+        ports = _full([(1, 50, None)])
+        snap = compute_snapshot(basic_system, ports)
+        car1 = next(c for c in snap.cars if c.port_id == 1)
+        assert car1.status == "Active"
+        assert car1.allocated_kw >= 125, (
+            f"SPEC §11 minimum engage: expected >=125 kW, got {car1.allocated_kw}"
+        )
+        assert car1.max_required == 50, "user-facing max_required should reflect input"
+        assert snap.total_power_kw >= 125
