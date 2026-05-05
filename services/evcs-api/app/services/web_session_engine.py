@@ -134,6 +134,8 @@ class WebSessionEngine:
         )
         # __init__ no longer settles — caller must use create() if demand
         # > 125 kW or cross-MCU borrow is involved.
+        self._log_engagement_state()
+        
 
     @classmethod
     async def create(
@@ -197,6 +199,25 @@ class WebSessionEngine:
             vehicle_profiles=list(profiles.values()),
             initial_vehicles=placements,
         )
+    
+    def _log_engagement_state(self) -> None:
+        active = [p for p in self._car_ports if p.max_required > 0]
+        if not active:
+            return
+        print("[SPEC §11] Engagement state (post-arrival, pre-settle):", flush=True)
+        for port in active:
+            p_idx = port.port_id - 1
+            mcu_idx = p_idx // 2
+            local_idx = p_idx % 2
+            output = self._engine.station.boards[mcu_idx].outputs[local_idx]
+            relay = self._engine.station.boards[mcu_idx].output_relays[local_idx]
+            print(
+                f"  Port {port.port_id}: "
+                f"user_max={port.max_required:>3} kW, "
+                f"engagement_avail={output.available_power_kw:>5.0f} kW, "
+                f"output_relay={relay.state.name}",
+                flush=True,
+            )
 
     # ── Convergence (mirrors the Phase 0 SpikeRunner) ───────────────────
 
