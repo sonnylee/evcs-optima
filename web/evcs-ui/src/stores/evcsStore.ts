@@ -38,6 +38,8 @@ interface EvcsStore {
   // Actions (Phase 1 slice — config + topology only)
   initSession: (cfg: SystemConfig, ports?: CarPortInput[]) => Promise<void>;
   updateSystemConfig: (cfg: SystemConfig) => Promise<void>;
+  updateCarPort: (portId: number, patch: Partial<CarPortInput>) => Promise<void>;
+  nudgeMaxRequired: (portId: number, delta: number) => Promise<void>;
   refreshSnapshot: () => Promise<void>;
   clearConfigErrors: () => void;
 }
@@ -137,6 +139,40 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
       isLoading: false,
     });
     await get().refreshSnapshot();
+  },
+
+  updateCarPort: async (portId, patch) => {
+    const sid = get().sessionId;
+    if (!sid) return;
+
+    // 1. Optimistic local update.
+    const next = get().carPorts.map((p) =>
+      p.port_id === portId ? { ...p, ...patch } : p,
+    );
+    set({ carPorts: next });
+
+    // 2. PATCH backend with the full car_ports list (SPEC-WEB-API §1.2).
+    const { data, error } = await evcsApi.patchSession(sid, { car_ports: next });
+    if (error || !data) {
+      set({ globalError: 'Failed to update car port' });
+      return;
+    }
+
+    // 3. Replace local with server response to avoid drift.
+    set({ carPorts: data.car_ports });
+
+    // 4. Refresh snapshot ONLY when max_required changed (SPEC-WEB-UI §2.2).
+    if ('max_required' in patch) {
+      await get().refreshSnapshot();
+    }
+  },
+
+  nudgeMaxRequired: async (portId, delta) => {
+    const port = get().carPorts.find((p) => p.port_id === portId);
+    if (!port) return;
+    const clamped = Math.max(0, Math.min(600, port.max_required + delta));
+    if (clamped === port.max_required) return;
+    await get().updateCarPort(portId, { max_required: clamped });
   },
 
   refreshSnapshot: async () => {

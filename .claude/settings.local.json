@@ -19,7 +19,18 @@
       "Bash(pkill -f vite)",
       "Bash(python -c \"import simulation.environment.simulation_engine; print\\('import ok'\\)\")",
       "Bash(python -m pytest tests/integration/test_engine_for_web_spike.py::test_spec_01 -v -m spike)",
-      "Bash(python -m pytest tests/integration/test_engine_for_web_spike.py -v -m spike -s)"
+      "Bash(python -m pytest tests/integration/test_engine_for_web_spike.py -v -m spike -s)",
+      "Bash(bun run *)",
+      "Bash(python3 -m uvicorn app.main:app --app-dir services/evcs-api --port 8000 --log-level warning)",
+      "Bash(echo \"started backend pid=$!\")",
+      "Bash(curl -s http://localhost:8000/api/v1/health)",
+      "Bash(curl -s -X POST http://localhost:8000/api/v1/sessions -H 'content-type: application/json' -d '{\"system_config\":{\"rec_bd_count\":4,\"rec_bds\":[{\"id\":1,\"module_powers\":[50,75,75,50]},{\"id\":2,\"module_powers\":[50,75,75,50]},{\"id\":3,\"module_powers\":[50,75,75,50]},{\"id\":4,\"module_powers\":[50,75,75,50]}]},\"car_ports\":[{\"port_id\":1,\"max_required\":250,\"present\":0,\"target\":0,\"priority\":1},{\"port_id\":2,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":3,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":4,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":5,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":6,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":7,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":8,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null}]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['session_id']\\); print\\(len\\(d['car_ports']\\)\\)\")",
+      "Bash(curl -s -X PATCH \"http://localhost:8000/api/v1/sessions/c13869426219485cb3a6602244e96954\" -H 'content-type: application/json' -d '{\"car_ports\":[{\"port_id\":1,\"max_required\":275,\"present\":0,\"target\":0,\"priority\":1},{\"port_id\":2,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":3,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":4,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":5,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":6,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":7,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null},{\"port_id\":8,\"max_required\":0,\"present\":0,\"target\":0,\"priority\":null}]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('port1:', d['car_ports'][0]\\)\")",
+      "Bash(curl -s \"http://localhost:8000/api/v1/sessions/c13869426219485cb3a6602244e96954/snapshot\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('cars:', [\\(c['port_id'], c['max_required'], c['allocated_kw'], c['status']\\) for c in d.get\\('cars',[]\\)]\\)\")",
+      "Bash(kill 11621)"
     ]
   }
 }

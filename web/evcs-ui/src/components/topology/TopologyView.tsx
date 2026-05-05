@@ -1,9 +1,129 @@
 import { useEvcsStore } from '../../stores/evcsStore';
+import type { PackSnapshot, RelaySnapshot, RecBdSnapshot } from '../../types/evcs';
 import { BridgeRelay } from './BridgeRelay';
 import { CarIcon } from './CarIcon';
-import { PackGrid } from './PackGrid';
 import { RecBdLabel } from './RecBdLabel';
 import { RelayIcon } from './RelayIcon';
+
+const CAR_ROW_HEIGHT = 64; // matches h-16 used in CarRow / Fr14ControlTable rows
+const REC_BD_HEIGHT = CAR_ROW_HEIGHT * 2; // each REC BD owns 2 cars
+
+interface GroupBlockProps {
+  groupIndex: number;
+  powerKw: number;
+  packs: PackSnapshot[];
+}
+
+function GroupBlock({ groupIndex, powerKw, packs }: GroupBlockProps) {
+  const ownerColor = packs.find((p) => p.in_use)?.color ?? '#FFFFFF';
+  const inUse = packs.some((p) => p.in_use);
+  return (
+    <div
+      className={`flex flex-col items-center justify-center rounded border text-[11px] font-mono px-2 ${
+        inUse ? 'border-slate-500 text-white' : 'border-slate-300 text-slate-600'
+      }`}
+      style={{ backgroundColor: ownerColor, flex: powerKw }}
+      title={`Group ${groupIndex + 1} • ${powerKw}kW (${packs.length} packs)`}
+    >
+      <span className="font-semibold leading-none">{powerKw}kW</span>
+      <span className="text-[9px] leading-none opacity-80 mt-0.5">G{groupIndex + 1}</span>
+    </div>
+  );
+}
+
+interface RecBdRowProps {
+  recBd: RecBdSnapshot;
+  packs: PackSnapshot[];
+  outputRelays: RelaySnapshot[];
+  interGroupRelays: RelaySnapshot[];
+  cars: ReturnType<typeof groupCars>;
+}
+
+function groupCars(snapshot: ReturnType<typeof useEvcsStore.getState>['snapshot'], recBdId: number) {
+  if (!snapshot) return [];
+  return snapshot.cars
+    .filter((c) => c.rec_bd_id === recBdId)
+    .sort((a, b) => a.port_id - b.port_id);
+}
+
+function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdRowProps) {
+  // Group packs by group_index inferred from pack.pack_index ranges.
+  // We don't have group_index on PackSnapshot, but config gives module_powers.
+  const systemConfig = useEvcsStore((s) => s.systemConfig);
+  const recBdConfig = systemConfig?.rec_bds.find((b) => b.id === recBd.id);
+  const modulePowers = recBdConfig?.module_powers ?? [50, 75, 75, 50];
+
+  // Build pack ranges per group.
+  const groups: { index: number; powerKw: number; packs: PackSnapshot[] }[] = [];
+  let cursor = 0;
+  modulePowers.forEach((kw, gIdx) => {
+    const packCount = Math.round(kw / 25);
+    const slice = packs
+      .slice()
+      .sort((a, b) => a.pack_index - b.pack_index)
+      .filter((p) => p.pack_index >= cursor && p.pack_index < cursor + packCount);
+    groups.push({ index: gIdx, powerKw: kw, packs: slice });
+    cursor += packCount;
+  });
+
+  // Sort inter-group relays by id (M{n}.R2 < R3 < R4)
+  const sortedInter = [...interGroupRelays].sort((a, b) => a.id.localeCompare(b.id));
+
+  // Match output relay to car by port id.
+  const outputForPort = (portId: number) =>
+    outputRelays.find((r) => r.owner_port_id === portId);
+
+  return (
+    <div
+      className="flex items-stretch gap-3"
+      style={{ height: REC_BD_HEIGHT }}
+      data-testid={`rec-bd-row-${recBd.id}`}
+    >
+      <RecBdLabel recBd={recBd} />
+      {/* Group column with inter-group relay dots interleaved */}
+      <div className="flex flex-col w-24" style={{ height: REC_BD_HEIGHT }}>
+        {groups.map((g, idx) => (
+          <div key={g.index} className="flex flex-col" style={{ flex: g.powerKw }}>
+            <div className="flex-1 flex">
+              <GroupBlock groupIndex={g.index} powerKw={g.powerKw} packs={g.packs} />
+            </div>
+            {idx < groups.length - 1 && sortedInter[idx] && (
+              <div className="flex justify-center -my-1 z-10">
+                <span
+                  className={`block w-3 h-3 rounded-full border ${
+                    sortedInter[idx].state === 'Closed'
+                      ? 'border-red-700'
+                      : 'border-slate-400'
+                  }`}
+                  style={{ backgroundColor: sortedInter[idx].color }}
+                  title={`${sortedInter[idx].id} • ${sortedInter[idx].state}`}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {/* Cars column — exactly 2 rows of CAR_ROW_HEIGHT to align with right panels */}
+      <div className="flex flex-col flex-1">
+        {cars.map((car) => {
+          const out = outputForPort(car.port_id);
+          return (
+            <div
+              key={car.port_id}
+              className="flex items-center gap-2"
+              style={{ height: CAR_ROW_HEIGHT }}
+            >
+              <span className="flex-1 border-t border-dashed border-slate-300" />
+              {out && <RelayIcon relay={out} />}
+              <span className="flex-1 border-t border-dashed border-slate-300" />
+              <CarIcon car={car} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function TopologyView() {
   const snapshot = useEvcsStore((s) => s.snapshot);
@@ -19,19 +139,18 @@ export function TopologyView() {
   const recBdIds = snapshot.rec_bds.map((b) => b.id);
 
   return (
-    <div className="flex flex-col gap-4">
-      {snapshot.rec_bds.map((recBd) => {
+    <div className="flex flex-col gap-1" data-testid="topology-view">
+      {snapshot.rec_bds.map((recBd, idx) => {
         const packs = snapshot.packs.filter((p) => p.rec_bd_id === recBd.id);
-        const localRelays = snapshot.relays.filter(
-          (r) => r.rec_bd_id === recBd.id && r.kind !== 'bridge',
+        const outputRelays = snapshot.relays.filter(
+          (r) => r.kind === 'output' && r.rec_bd_id === recBd.id,
         );
-        const cars = snapshot.cars.filter((c) => c.rec_bd_id === recBd.id);
-        const outputRelays = localRelays.filter((r) => r.kind === 'output');
-        const interGroupRelays = localRelays.filter((r) => r.kind === 'inter_group');
+        const interGroupRelays = snapshot.relays.filter(
+          (r) => r.kind === 'inter_group' && r.rec_bd_id === recBd.id,
+        );
+        const cars = groupCars(snapshot, recBd.id);
 
-        // Bridges that connect *into* this REC BD from the next one in the list,
-        // rendered between this REC BD and the next.
-        const nextId = recBdIds[recBdIds.indexOf(recBd.id) + 1];
+        const nextId = recBdIds[idx + 1];
         const bridgeBelow = nextId
           ? snapshot.relays.find(
               (r) =>
@@ -42,33 +161,18 @@ export function TopologyView() {
 
         return (
           <div key={recBd.id}>
-            <RecBdLabel recBd={recBd}>
-              <PackGrid packs={packs} />
-              {interGroupRelays.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {interGroupRelays.map((r) => (
-                    <RelayIcon key={r.id} relay={r} />
-                  ))}
-                </div>
-              )}
-              <div className="flex justify-between gap-4">
-                {cars.map((c) => {
-                  const out = outputRelays.find((r) => r.owner_port_id === c.port_id);
-                  return (
-                    <div key={c.port_id} className="flex flex-col gap-2">
-                      {out && <RelayIcon relay={out} />}
-                      <CarIcon car={c} />
-                    </div>
-                  );
-                })}
-              </div>
-            </RecBdLabel>
+            <RecBdRow
+              recBd={recBd}
+              packs={packs}
+              outputRelays={outputRelays}
+              interGroupRelays={interGroupRelays}
+              cars={cars}
+            />
             {bridgeBelow && <BridgeRelay bridge={bridgeBelow} />}
           </div>
         );
       })}
 
-      {/* Ring-wrap bridge (last → first) for N ≥ 3 */}
       {snapshot.rec_bds.length >= 3 &&
         (() => {
           const first = recBdIds[0];
@@ -80,7 +184,7 @@ export function TopologyView() {
           );
           if (!wrap) return null;
           return (
-            <div className="text-center text-xs text-slate-500">
+            <div className="text-center text-[10px] text-slate-500 mt-2">
               Ring wrap (last ↔ first)
               <BridgeRelay bridge={wrap} />
             </div>
@@ -88,7 +192,7 @@ export function TopologyView() {
         })()}
 
       {snapshot.warnings.length > 0 && (
-        <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+        <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 mt-3">
           <strong className="block mb-1">Warnings</strong>
           <ul className="list-disc pl-4 space-y-0.5">
             {snapshot.warnings.map((w, i) => (

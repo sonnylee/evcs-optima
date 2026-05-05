@@ -490,16 +490,15 @@ TopologyView 重畫
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  [REC BD 1: blue, Power: 250kW, Occupied]                    │  ← FR-01, FR-02
-│   Pack₀ Pack₁ Pack₂ Pack₃ Pack₄ Pack₅ Pack₆ Pack₇ Pack₈ Pack₉│  ← FR-03
-│   [O1]──[R2]──[R3]──[R4]──[O2]                                │  ← FR-04
-│   ║                              ║                            │
-│   🚗 Car 1 (Active)             🚗 Car 2 (Inactive)          │  ← FR-05
-│   Max. Required: 250 kW          Max. Required: 0 kW          │  ← FR-06
+│  [REC BD 1]   [50kW Pack]──●──[Output Relay]──●─🚗 Car 1     │
+│  blue, 250kW  [75kW Pack]                                     │
+│  Occupied     [75kW Pack]                                     │
+│               [50kW Pack]──●──[Output Relay]──●─🚗 Car 2     │
 │                                                                │
-│   ─────── Bridge B_1_2 ───────                                │
+│  ──● Bridge B_1_2 ●──                                         │
 │                                                                │
-│  [REC BD 2: green, Power: 0kW, Idle]                          │
+│  [REC BD 2]   [50kW Pack]──●──[Output Relay]──●─🚗 Car 3     │
+│  green        ...                                              │
 │  ...                                                           │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -570,11 +569,15 @@ export const COLORS = {
 每一路（Port）一橫列，2N 列（N = REC BD 數量）：
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│ Car 1 │ Max Required: [125] kW [-25][+25] │ Present: [0] │ Target: [125] │ Pri: [1] │
-│ Car 2 │ Max Required: [125] kW [-25][+25] │ Present: [0] │ Target: [125] │ Pri: [2] │
-│ ...                                                                             │
-└───────────────────────────────────────────────────────────────────────────────┘
+中欄(白底,FR-07/09)                                右欄(灰底,FR-13/16)
+─────────────────────────────────────────────     ─────────────────────────────────
+                                                   優先級    Present     Target
+Car 1 - Max. Required: [125] kW [+25][-25]         [1]      [50] kW    [100] kW
+Car 2 - Max. Required: [  0] kW [+25][-25]         [3]      [50] kW    [100] kW
+... 8 列                                           ... 8 列
+                                                    ┌─────────────────┐
+                                                    │ Apply and Gen.  │
+                                                    └─────────────────┘
 ```
 
 #### 子元件 — `<MaxRequiredField>`（FR-07 + FR-12）
@@ -676,7 +679,7 @@ function PriorityField({ portId, value, allPriorities, maxN }: Props) {
 
 #### UI 元素
 
-放在 CarPortPanel 下方一個顯眼按鈕：
+位於 Fr14ControlTable(右欄灰底面板)底部,跟優先級 / Present / Target 表格同屬一個灰底視覺區塊。teal 綠色背景白字：
 
 ```
 [ Apply and Generate Control Steps ]
@@ -713,16 +716,23 @@ const onApply = async () => {
 #### UI 結構
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ Step 3 / 12                                                   │  ← StepProgress
-│ "Close Output Relay 3 (M2.O1)"                                │  ← StepDescription
-│                                                                │
-│            [<<  Back]      [Forward  >>]                      │
-│                                                                │
-│            [ ← 返回編輯模式 ]                                  │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│         Control Steps Player                │
+├────────────────────────────────────────────┤
+│              步驟進度                        │
+│              Step X / N                      │
+├────────────────────────────────────────────┤
+│  當前步驟操作:                                │
+│  <step.description>                          │
+├────────────────────────────────────────────┤
+│  系統狀態摘要:                                │
+│  總輸出功率: XXX kW / YYY kW                  │
+│  充電中車輛: A / 8                            │
+└────────────────────────────────────────────┘
 
-   (TopologyView 在上方反映當前 step.snapshot)
+         [<<  Back]      [Forward  >>]
+         
+         [ ← 返回編輯模式 ]
 ```
 
 #### 子元件
@@ -834,24 +844,33 @@ async function parseError(response: Response): Promise<ErrorDetail[]> {
 ```tsx
 function App() {
   const mode = useEvcsStore(s => s.mode);
+  
+  if (mode === 'edit') {
+    // 三欄(左圖、中白底、右灰底)
+    return (
+      <div className="grid grid-cols-[1fr_1fr_1fr] h-screen">
+        <main className="overflow-auto p-4 border-r">
+          <TopologyView />
+        </main>
+        <section className="overflow-y-auto p-4 border-r">
+          <CarRowsColumn />     {/* FR-07/09 ±25 按鈕 */}
+        </section>
+        <aside className="overflow-y-auto p-4 bg-slate-100">
+          <Fr14ControlTable />  {/* FR-13/16 priority/present/target + Apply */}
+        </aside>
+      </div>
+    );
+  }
+  
+  // Player mode - 雙欄(左圖、右 player 面板)
   return (
-    <div className="grid grid-cols-[400px_1fr] h-screen">
-      {/* 左側：永遠顯示的工具列（Config + CarPort + Apply / Player 控制） */}
-      <aside className="overflow-y-auto p-4 border-r">
-        {mode === 'edit' ? (
-          <>
-            <ConfigPanel />
-            <CarPortPanel />
-            <ApplyAndGenerateButton />
-          </>
-        ) : (
-          <StepPlayer />
-        )}
-      </aside>
-      {/* 右側：永遠顯示 Topology（內容隨 store.snapshot 變） */}
-      <main className="overflow-auto p-4">
+    <div className="grid grid-cols-[1fr_1fr] h-screen">
+      <main className="overflow-auto p-4 border-r">
         <TopologyView />
       </main>
+      <aside className="overflow-y-auto p-4">
+        <StepPlayer />
+      </aside>
     </div>
   );
 }
