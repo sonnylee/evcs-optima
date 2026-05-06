@@ -454,13 +454,15 @@ Present 欄與 Target 欄均需支援手動輸入數值，讓使用者能自由�
 
 使用者完成所有參數輸入後，點擊此按鈕觸發計算引擎，依照 Present 狀態與 Target 目標狀態的差異，產生有序的逐條控制步驟序列。
 1. **語義**:使用者按下 Apply 後,後端產生一條從 Present 狀態演化到 Target 狀態的合法 ControlStepSequence。
-2. **後端實作流程**(rebuild + diff):
-   - 步驟一:用 `present` 值建一個 `SimulationEngine` 實例,讀取其穩態作為 `ControlStepSequence.initial_state`。
-   - 步驟二:用 `target` 值建另一個 `SimulationEngine` 實例,讀取其穩態作為 final state。
-   - 步驟三:diff 兩個 state,根據 SPEC §11 的 relay 切換順序產生 `ControlStepSequence.steps[]`。
+2. **後端實作流程**(rebuild + diff + ordered apply):
+   - **步驟一**(建 Present 錨點):從 OFF cold-start 出發,用 `present` 值透過 `WebSessionEngine.create()` 建立實例並演化至穩態,讀取其狀態作為 `ControlStepSequence.initial_state`。
+   - **步驟二**(建 Target 錨點):從 OFF cold-start 出發(**獨立 engine**),用 `target` 值同樣建立實例並演化至穩態,讀取其狀態作為 final state。
+   - **步驟三**(diff + 排序):比對兩個錨點 state 得出 raw relay 變化集合,依 SPEC §11 的硬體約束(>=125 kW gating、disengage 順序、跨閾值切兩步)排成有序 atomic action sequence。
+   - **步驟四**(逐個 apply):從 `state_present` 出發逐個套用 atomic action,每套用一個產生中間 `VisualSnapshot`,組成 `steps[i]`。最後一個 snapshot 應等於 `state_target`(若不等則 raise internal error)。
+
+   錨點 engine 提供起點與終點 snapshot,中間 N 個 step 的 snapshot 由 step_planner 依 SPEC §11 規則手動演化(`SimulationEngine` 是穩態 solver,不會自動產生中間步驟)。
 3. **延遲**:P95 ≤ 5 秒(兩個 engine 建構 + diff)。逾時顯示「計算逾時,請重試」並讓 user 留在 edit mode。
-4. **Determinism**:同樣 `(system_config, present, target)` 多次按 Apply 產生**完全相同**的 ControlStepSequence。
-5. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
+4. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
 
 **觸發條件**
 
@@ -669,8 +671,7 @@ engine 物件被 garbage collected
    - 步驟二:用 `target` 值建另一個 `SimulationEngine` 實例,讀取其穩態作為 final state。
    - 步驟三:diff 兩個 state,根據 SPEC §11 的 relay 切換順序產生 `ControlStepSequence.steps[]`。
 3. **延遲**:P95 ≤ 5 秒(兩個 engine 建構 + diff)。逾時顯示「計算逾時,請重試」並讓 user 留在 edit mode。
-4. **Determinism**:同樣 `(system_config, present, target)` 多次按 Apply 產生**完全相同**的 ControlStepSequence。
-5. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
+4. **與 FR-09 視覺一致性**:因兩條路徑使用同一套演算法,FR-09 edit mode 顯示的硬體配電與 FR-14 player mode 中對應 demand 的 snapshot 完全一致(deterministic)。
 
 ---
 
