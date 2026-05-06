@@ -1,15 +1,11 @@
 """EvcsCoreAdapter — orchestration entry point for FR-14 Apply and Generate.
 
-Phase 3 wraps the existing simulation algorithm by reusing the deterministic
-allocator in ``state_calculation_service.compute_snapshot`` and producing a
-``ControlStepSequence`` via ``step_planner.plan_transition``.
-
-The Python ``simulation/`` core itself is **not invoked** — it is time-driven
-with vehicle-SOC dynamics and consecutive-step counters that are
-incompatible with a stateless HTTP request, and its hardware topology is
-hardcoded (4 SMR groups × 2 outputs × ``[50,75,75,50]`` kW per MCU) so it
-cannot represent FR-11 user-configured power lists. The adapter instead
-operates on the same algorithmic primitives at the snapshot level.
+Phase 3 / Step F14.2 makes this layer fully async: both ``_present_warnings``
+and ``generate_control_steps`` are ``async def`` and call
+``WebSessionEngine.create()`` directly (no ``compute_snapshot`` indirection).
+The two endpoint engines (initial / final) are independent — separate
+``SimulationEngine`` instances built from OFF, settled to the demand-specific
+steady state, and discarded after the snapshot is read (SPEC-WEB-API §3.3).
 
 Routes use this module as their single entry point.
 """
@@ -21,11 +17,11 @@ from app.schemas.car_port import CarPortInput
 from app.schemas.config import SystemConfig
 from app.schemas.control_step import ControlStepSequence
 from app.schemas.error import ErrorDetail
-from app.services.state_calculation_service import compute_snapshot
 from app.services.validation_service import (
     priorities_ready_for_apply,
     validate_target_within_capacity,
 )
+from app.services.web_session_engine import WebSessionEngine
 
 from app.adapters import step_planner
 
@@ -50,7 +46,7 @@ class PrioritiesIncompleteError(AdapterError):
 # Pre-warning detection (FR-14 "unreasonable Present")
 # ---------------------------------------------------------------------------
 
-def _present_warnings(
+async def _present_warnings(
     system: SystemConfig, car_ports: List[CarPortInput]
 ) -> List[str]:
     """FR-14: warn if user-entered Present is unreasonable.
@@ -88,7 +84,8 @@ def _present_warnings(
         present_ports = [
             cp.model_copy(update={"max_required": cp.present}) for cp in car_ports
         ]
-        snap = compute_snapshot(system, present_ports)
+        engine = await WebSessionEngine.create(system, present_ports)
+        snap = engine.to_visual_snapshot()
         for c in snap.cars:
             cp = next(p for p in car_ports if p.port_id == c.port_id)
             if cp.present > 0 and c.allocated_kw < cp.present:
@@ -104,7 +101,7 @@ def _present_warnings(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def generate_control_steps(
+async def generate_control_steps(
     system_config: SystemConfig, car_ports: List[CarPortInput]
 ) -> ControlStepSequence:
     """Validate inputs, build endpoint snapshots, and plan the transition."""
@@ -129,18 +126,22 @@ def generate_control_steps(
         )
 
     # 2. Soft warnings (do not abort)
-    warnings = _present_warnings(system_config, car_ports)
+    warnings = await _present_warnings(system_config, car_ports)
 
-    # 3. Endpoint snapshots — treat present / target as the effective max_required
+    # 3. Endpoint snapshots — two independent WebSessionEngine instances,
+    #    each built from OFF and settled to its own demand-specific steady
+    #    state (SPEC-WEB-API §3.3 步驟一 / 步驟二).
     initial_ports = [
         cp.model_copy(update={"max_required": cp.present}) for cp in car_ports
     ]
-    initial_state = compute_snapshot(system_config, initial_ports)
+    initial_engine = await WebSessionEngine.create(system_config, initial_ports)
+    initial_state = initial_engine.to_visual_snapshot()
 
     target_ports = [
         cp.model_copy(update={"max_required": cp.target}) for cp in car_ports
     ]
-    final_state = compute_snapshot(system_config, target_ports)
+    final_engine = await WebSessionEngine.create(system_config, target_ports)
+    final_state = final_engine.to_visual_snapshot()
 
     # 4. Identity short-circuit
     if initial_state == final_state:

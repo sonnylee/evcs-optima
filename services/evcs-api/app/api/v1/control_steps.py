@@ -40,7 +40,7 @@ def _adapter_to_http(exc: AdapterError) -> HTTPException:
     "/{session_id}/apply-and-generate",
     response_model=ControlStepSequence,
 )
-def apply_and_generate(
+async def apply_and_generate(
     session_id: str, store: SessionStore = Depends(get_store)
 ) -> ControlStepSequence:
     """FR-14: produce the Present → Target control-step sequence and store it."""
@@ -52,7 +52,7 @@ def apply_and_generate(
         )
 
     try:
-        seq = generate_control_steps(s.system_config, s.car_ports)
+        seq = await generate_control_steps(s.system_config, s.car_ports)
     except (TargetExceedsCapacityError, PrioritiesIncompleteError) as exc:
         raise _adapter_to_http(exc) from exc
 

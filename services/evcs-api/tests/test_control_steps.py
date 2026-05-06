@@ -11,6 +11,7 @@ should turn green automatically.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, List
 
 import pytest
@@ -88,7 +89,7 @@ def _ports_full(rec_bd_count: int, overrides: Dict[int, Dict]) -> List[CarPortIn
 def test_identity_no_change_required():
     sys = _system(2)
     ports = _ports_full(2, {1: {"max_required": 125, "present": 125, "target": 125}})
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     assert seq.total_steps == 0
     assert seq.steps == []
     assert any("No change required" in w for w in seq.warnings)
@@ -104,7 +105,7 @@ def test_target_exceeds_capacity_raises():
         },
     )
     with pytest.raises(TargetExceedsCapacityError):
-        generate_control_steps(sys, ports)
+        asyncio.run(generate_control_steps(sys, ports))
 
 
 def test_priorities_insufficient_raises():
@@ -119,7 +120,7 @@ def test_priorities_insufficient_raises():
         },
     )
     with pytest.raises(PrioritiesIncompleteError):
-        generate_control_steps(sys, ports)
+        asyncio.run(generate_control_steps(sys, ports))
 
 
 @pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
@@ -129,7 +130,7 @@ def test_arrival_holds_output_open_until_125kw():
     ports = _ports_full(
         2, {1: {"max_required": 125, "present": 0, "target": 125}}
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     assert seq.total_steps > 0
 
     # Walk every emitted step. While allocation < 125 kW for port 1, Output must be Open.
@@ -159,7 +160,7 @@ def test_arrival_below_125kw_never_closes_output():
     ports = _ports_full(
         2, {1: {"max_required": 75, "present": 0, "target": 75}}
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     for step in seq.steps:
         relay = _output_relay(step.snapshot, 1)
         assert relay.state == "Open", "Output must stay Open while target < 125 kW"
@@ -172,7 +173,7 @@ def test_full_departure_opens_output_last():
     ports = _ports_full(
         2, {1: {"max_required": 0, "present": 200, "target": 0}}
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     assert seq.total_steps > 0
 
     output_open_idx = -1
@@ -199,7 +200,7 @@ def test_partial_release_keeps_output_closed():
     ports = _ports_full(
         2, {1: {"max_required": 200, "present": 200, "target": 125}}
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     assert seq.total_steps > 0
     for step in seq.steps:
         relay = _output_relay(step.snapshot, 1)
@@ -217,7 +218,7 @@ def test_priority_drives_arrival_order():
             3: {"max_required": 125, "present": 0, "target": 125, "priority": 1},
         },
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
 
     # Find first step in which each port reaches 125 kW (engagement signal).
     p3_engaged_idx = next(
@@ -242,7 +243,7 @@ def test_unreasonable_present_warns_does_not_abort():
             2: {"max_required": 0, "present": 0, "target": 0, "priority": 2},
         },
     )
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
     assert any(
         "Present" in w and "exceeds Max Required" in w for w in seq.warnings
     )
@@ -257,7 +258,7 @@ def test_ring_wrap_borrow_4_rec_bds():
     # Need at least 2 priorities set
     overrides[2] = {"priority": 2}
     ports = _ports_full(4, overrides)
-    seq = generate_control_steps(sys, ports)
+    seq = asyncio.run(generate_control_steps(sys, ports))
 
     # In the final snapshot, B_4_1 must be closed because Port 1 expanded into REC BD 4
     # (anchor at G0 of REC BD 1, expands via right-then-left ring walk).
@@ -308,10 +309,28 @@ def test_apply_is_deterministic():
     ports = _ports_full(
         4, {1: {"max_required": 250, "present": 0, "target": 250, "priority": 1}}
     )
-    seq1 = generate_control_steps(sys, ports)
-    seq2 = generate_control_steps(sys, ports)
+    seq1 = asyncio.run(generate_control_steps(sys, ports))
+    seq2 = asyncio.run(generate_control_steps(sys, ports))
     assert seq1.total_steps == seq2.total_steps
     assert [s.description for s in seq1.steps] == [s.description for s in seq2.steps]
+
+
+@pytest.mark.benchmark
+def test_apply_4mcu_latency_under_500ms():
+    """SPEC-WEB-API §3.3 #3: P95 ≤ 5 s. With WebSessionEngine direct calls,
+    expect ≪ 500 ms — Sprint 1 demo has tons of slack.
+    """
+    import time
+
+    sys = _system(4)
+    ports = _ports_full(
+        4, {1: {"max_required": 250, "present": 0, "target": 250, "priority": 1}}
+    )
+    t0 = time.perf_counter()
+    seq = asyncio.run(generate_control_steps(sys, ports))
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert seq.total_steps > 0
+    assert elapsed_ms < 500, f"Apply took {elapsed_ms:.0f} ms, > 500 ms"
 
 
 # ---------------------------------------------------------------------------
