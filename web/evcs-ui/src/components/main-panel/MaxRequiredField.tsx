@@ -15,6 +15,11 @@ export function MaxRequiredField({ portId, value }: Props) {
     setDraft(String(value));
   }, [value]);
 
+  // TODO(F09.6 §1.3 / Sprint 2): potential race condition — if user types
+  // again before the async update settles, the next useEffect may
+  // overwrite the new draft with the previous value. Not reproducible
+  // in normal demo flow (user can't type fast enough), but should be
+  // hardened in Sprint 2 with an in-flight request token check.
   const commit = () => {
     const num = parseInt(draft, 10);
     if (Number.isNaN(num)) {

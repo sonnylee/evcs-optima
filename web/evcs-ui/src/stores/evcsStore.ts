@@ -145,8 +145,11 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     const sid = get().sessionId;
     if (!sid) return;
 
+    // Snapshot prev state for rollback on PATCH failure.
+    const prev = get().carPorts;
+
     // 1. Optimistic local update.
-    const next = get().carPorts.map((p) =>
+    const next = prev.map((p) =>
       p.port_id === portId ? { ...p, ...patch } : p,
     );
     set({ carPorts: next });
@@ -154,7 +157,11 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     // 2. PATCH backend with the full car_ports list (SPEC-WEB-API §1.2).
     const { data, error } = await evcsApi.patchSession(sid, { car_ports: next });
     if (error || !data) {
-      set({ globalError: 'Failed to update car port' });
+      // Rollback optimistic update — UI snaps back to last known-good state.
+      set({
+        carPorts: prev,
+        globalError: 'Failed to update car port — try again',
+      });
       return;
     }
 
@@ -180,7 +187,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     if (!sid) return;
     const { data, error } = await evcsApi.getSnapshot(sid);
     if (error || !data) {
-      set({ globalError: 'Failed to fetch snapshot' });
+      set({ globalError: 'Snapshot refresh failed — try the +/- button again' });
       return;
     }
     // Pydantic default_factory=list fields come through as optional in the
