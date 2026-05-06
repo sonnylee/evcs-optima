@@ -151,8 +151,10 @@ def generate_control_steps(
             warnings=warnings + ["No change required"],
         )
 
-    # 5. Plan the transition
-    steps = step_planner.plan_transition(system_config, car_ports, initial_state)
+    # 5. Plan the transition (rebuild + diff — F14.1)
+    steps = step_planner.plan_transition(
+        system_config, car_ports, initial_state, final_state
+    )
 
     return ControlStepSequence(
         total_steps=len(steps),

@@ -1,12 +1,13 @@
 """Phase 3 — control-step adapter + routes (FR-14, FR-15).
 
-Phase 3 / F09.2 note: ``compute_snapshot`` is now powered by
-``WebSessionEngine`` (rebuild-engine snapshot strategy). The reactive engine
-borrows in **group granularity** (not pack-by-pack) and emits the SPEC §11
-relay-ordering events through a different code path than the legacy greedy
-allocator. Tests that asserted on exact step sequences / relay orderings
-are xfail-marked here; F14.1 will rewrite ``step_planner.plan_transition``
-to use the rebuild + diff strategy and these tests will be re-validated then.
+Post-F14.1 status: ``step_planner.plan_transition`` has been rewritten as
+rebuild + diff. Many of these tests still ``xfail`` because they use
+``_system(2)`` / ``_create_session_with_arrival(...)`` (which builds a
+2-REC-BD session); ``WebSessionEngine`` only accepts 4-REC-BD configs in
+Sprint 1, so ``compute_snapshot`` raises ``ValueError`` before the new
+``step_planner`` is ever exercised. The blocker is fixture data, not the
+algorithm — Sprint 2 (FR-11) will lift the 4-REC-BD pin and these tests
+should turn green automatically.
 """
 from __future__ import annotations
 
@@ -24,9 +25,10 @@ from app.adapters.evcs_core_adapter import (
 from app.schemas.car_port import CarPortInput
 from app.schemas.config import RecBdConfig, SystemConfig
 
-_F14_REWRITE_REASON = (
-    "F09.2 reroutes compute_snapshot through WebSessionEngine; F14.1 will "
-    "rewrite step_planner with the rebuild + diff strategy and re-validate"
+_SPRINT1_REASON = (
+    "WebSessionEngine Sprint 1 only supports 4-REC-BD config; this test "
+    "uses _system(2) so compute_snapshot raises ValueError before "
+    "step_planner runs. Lift after FR-11 / Sprint 2."
 )
 
 
@@ -82,7 +84,7 @@ def _ports_full(rec_bd_count: int, overrides: Dict[int, Dict]) -> List[CarPortIn
 # Adapter unit tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_identity_no_change_required():
     sys = _system(2)
     ports = _ports_full(2, {1: {"max_required": 125, "present": 125, "target": 125}})
@@ -120,7 +122,7 @@ def test_priorities_insufficient_raises():
         generate_control_steps(sys, ports)
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_arrival_holds_output_open_until_125kw():
     """SPEC §11: Output relay stays Open while allocated < 125 kW."""
     sys = _system(2)
@@ -150,7 +152,7 @@ def test_arrival_holds_output_open_until_125kw():
     assert "Close M1.O1" in seq.steps[closed_idx].description
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_arrival_below_125kw_never_closes_output():
     """target=75 kW is below the engagement threshold — Output must never close."""
     sys = _system(2)
@@ -163,7 +165,7 @@ def test_arrival_below_125kw_never_closes_output():
         assert relay.state == "Open", "Output must stay Open while target < 125 kW"
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_full_departure_opens_output_last():
     """SPEC §11: on full departure, inter-group relays open before Output."""
     sys = _system(2)
@@ -190,7 +192,7 @@ def test_full_departure_opens_output_last():
             )
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_partial_release_keeps_output_closed():
     """Output must stay Closed during partial release (allocated never hits 0)."""
     sys = _system(2)
@@ -204,7 +206,7 @@ def test_partial_release_keeps_output_closed():
         assert relay.state == "Closed"
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_priority_drives_arrival_order():
     """Highest-priority arrival completes before lower-priority ones."""
     sys = _system(2)
@@ -229,7 +231,7 @@ def test_priority_drives_arrival_order():
     assert p3_engaged_idx < p1_engaged_idx
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_unreasonable_present_warns_does_not_abort():
     """FR-14: present > max_required emits warning but sequence still generated."""
     sys = _system(2)
@@ -294,6 +296,24 @@ def test_schedule_phase_ordering():
     assert first_tick_idx[2] < first_tick_idx[4]
 
 
+def test_apply_is_deterministic():
+    """SPEC-WEB-API §3.3 #4: same (config, present, target) → identical sequence.
+
+    F14.1 deviation from task spec: uses _system(4) instead of _system(2)
+    because WebSessionEngine pins to 4-REC-BD configs in Sprint 1; _system(2)
+    would raise ValueError before the planner runs. Determinism is what's
+    being checked and 4-REC-BD demonstrates it just as well.
+    """
+    sys = _system(4)
+    ports = _ports_full(
+        4, {1: {"max_required": 250, "present": 0, "target": 250, "priority": 1}}
+    )
+    seq1 = generate_control_steps(sys, ports)
+    seq2 = generate_control_steps(sys, ports)
+    assert seq1.total_steps == seq2.total_steps
+    assert [s.description for s in seq1.steps] == [s.description for s in seq2.steps]
+
+
 # ---------------------------------------------------------------------------
 # Route integration tests
 # ---------------------------------------------------------------------------
@@ -320,7 +340,7 @@ def _create_session_with_arrival(client: TestClient, target: int = 125) -> str:
     return r.json()["session_id"]
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_route_apply_and_generate_persists_sequence(client: TestClient):
     sid = _create_session_with_arrival(client, target=125)
 
@@ -392,7 +412,7 @@ def test_route_apply_and_generate_422_priorities_insufficient(client: TestClient
     assert body["detail"]["errors"][0]["code"] == "PRIORITIES_INSUFFICIENT"
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_route_get_control_steps(client: TestClient):
     sid = _create_session_with_arrival(client)
     r = client.post(f"/api/v1/sessions/{sid}/apply-and-generate")
@@ -410,7 +430,7 @@ def test_route_get_control_steps_404_when_no_sequence(client: TestClient):
     assert r.status_code == 404
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_route_step_player_wraps_at_ends(client: TestClient):
     sid = _create_session_with_arrival(client, target=125)
     r = client.post(f"/api/v1/sessions/{sid}/apply-and-generate")
@@ -433,7 +453,7 @@ def test_route_step_player_wraps_at_ends(client: TestClient):
     assert rb.json()["current_step_index"] == total
 
 
-@pytest.mark.xfail(reason=_F14_REWRITE_REASON, strict=True)
+@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_route_patch_invalidates_step_sequence(client: TestClient):
     sid = _create_session_with_arrival(client)
     client.post(f"/api/v1/sessions/{sid}/apply-and-generate")
