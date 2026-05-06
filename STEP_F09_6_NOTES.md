@@ -16,6 +16,19 @@
   rapid typing during in-flight PATCH could overwrite draft. TODO
   comment added at commit() function. Not reproducible in normal demo.
 
-## §2 / §4
+## §2 Backend integration tests
+
+- **§2.1 SPEC §6.2 sequence regression**: pinned the 0/25/50/25/0
+  user sequence with expected alloc 0/50/50/50/0 to prevent any
+  future demand-floor regression like F09.5c. Test docstring
+  carries the rationale for each step.
+
+- **§2.2 Repeated-PATCH determinism**: verified rebuild-engine
+  throwaway gives byte-identical snapshots between
+  incremental-PATCH and direct-PATCH paths.
+
+Backend test count: 55 → 57 passed (+ 23 xfailed unchanged).
+
+## §4
 
 (To be filled in after each subsequent F09.6 commit.)

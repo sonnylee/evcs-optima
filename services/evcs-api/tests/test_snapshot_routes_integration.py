@@ -93,6 +93,83 @@ class TestSnapshotComputeRoute:
         snap = r.json()
         assert not any("exceeds" in w.lower() for w in snap["warnings"])
 
+    def test_user_sequence_engage_release_increment_decrement(self, client: TestClient):
+        """SPEC §6.2 regression: rebuild-engine across +25/-25 sequence.
+
+        Pins behaviour reported during F09.5c review. F09.5c attempted a 125 kW
+        demand floor that broke the natural release path; this regression
+        catches any future reintroduction of that mistake.
+
+        Module config: 4 MCU × [50, 75, 75, 50] per REC BD.
+        Anchor for O0 is G0+G1 = 50+75 = 125 kW.
+
+        | Step           | max | expected alloc | rationale                                          |
+        |----------------|-----|----------------|----------------------------------------------------|
+        | start          |   0 |   0 | idle                                                              |
+        | +25 (engage)   |  25 |  50 | settle releases G1 (avail-demand=100 >= edge=75)                  |
+        | +25            |  50 |  50 | (avail=50, demand=50): no further release                         |
+        | -25            |  25 |  50 | (avail=50, demand=25): edge=G0=50 > 25, NO release                |
+        | -25 (idle)     |   0 |   0 | output relay opens                                                |
+
+        Key non-obvious step: "-25 to 25" does NOT release further — edge is
+        now G0 (the anchor), which cannot be released without disengaging
+        the Output entirely.
+        """
+        cfg = _cfg_4mcu()
+
+        def _alloc_for(max_kw: int) -> int:
+            if max_kw == 0:
+                ports = _full_ports([])
+            else:
+                ports = _full_ports([(1, max_kw)])
+            r = client.post(
+                "/api/v1/snapshot/compute",
+                json={"system_config": cfg, "car_ports": ports},
+            )
+            assert r.status_code == 200, r.text
+            car1 = next(c for c in r.json()["cars"] if c["port_id"] == 1)
+            return car1["allocated_kw"]
+
+        assert _alloc_for(0) == 0, "start: idle, alloc=0"
+        assert _alloc_for(25) == 50, "+25 engage: settles to G0=50 after §6.2 release"
+        assert _alloc_for(50) == 50, "+25 to 50: holds at G0=50, no release possible"
+        assert _alloc_for(25) == 50, "-25 to 25: edge=G0=50 > (50-25=25), NO further release"
+        assert _alloc_for(0) == 0, "-25 to 0: idle"
+
+    def test_repeated_patches_are_deterministic(self, client: TestClient):
+        """FR-09 rebuild-engine guarantee: same final state ⇒ same snapshot.
+
+        PATCH sequence A→B→C and direct PATCH C should both yield snapshot
+        bit-identical at the visible payload level. This is the core promise
+        of the rebuild-engine throwaway strategy — no SessionStore stale
+        state should leak between PATCHes.
+        """
+        body = {
+            "system_config": _cfg_4mcu(),
+            "car_ports": _full_ports([]),
+        }
+        # Path 1: incremental PATCHes 50 → 75 → 125
+        sid_a = client.post("/api/v1/sessions", json=body).json()["session_id"]
+        for mr in (50, 75, 125):
+            client.patch(
+                f"/api/v1/sessions/{sid_a}",
+                json={"car_ports": _full_ports([(1, mr)])},
+            )
+        snap_a = client.get(f"/api/v1/sessions/{sid_a}/snapshot").json()
+
+        # Path 2: single PATCH directly to 125
+        sid_b = client.post("/api/v1/sessions", json=body).json()["session_id"]
+        client.patch(
+            f"/api/v1/sessions/{sid_b}",
+            json={"car_ports": _full_ports([(1, 125)])},
+        )
+        snap_b = client.get(f"/api/v1/sessions/{sid_b}/snapshot").json()
+
+        assert snap_a["total_power_kw"] == snap_b["total_power_kw"]
+        assert snap_a["cars"] == snap_b["cars"]
+        assert snap_a["packs"] == snap_b["packs"]
+        assert snap_a["relays"] == snap_b["relays"]
+
 
 # ── GET /sessions/{id}/snapshot ───────────────────────────────────────────
 
