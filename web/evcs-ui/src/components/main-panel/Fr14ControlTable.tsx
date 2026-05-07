@@ -6,13 +6,10 @@ import { TargetField } from './TargetField';
 export function Fr14ControlTable() {
   const carPorts = useEvcsStore((s) => s.carPorts);
   const systemConfig = useEvcsStore((s) => s.systemConfig);
+  const isApplying = useEvcsStore((s) => s.isApplying);
+  const applyInfo = useEvcsStore((s) => s.applyInfo);
+  const applyAndGenerate = useEvcsStore((s) => s.applyAndGenerate);
   const maxN = systemConfig ? systemConfig.rec_bd_count * 2 : carPorts.length;
-
-  const onApply = () => {
-    // F14.3 will wire backend; this step keeps it as a noop.
-    // eslint-disable-next-line no-console
-    console.log('Apply and Generate — F14.3 will wire backend');
-  };
 
   return (
     <div className="bg-slate-100 rounded-md flex flex-col h-full">
@@ -43,13 +40,19 @@ export function Fr14ControlTable() {
           );
         })}
       </div>
-      <div className="p-3">
+      <div className="p-3 space-y-2">
+        {applyInfo && (
+          <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+            {applyInfo}
+          </div>
+        )}
         <button
           type="button"
-          onClick={onApply}
-          className="w-full bg-teal-500 hover:bg-teal-600 text-white text-sm font-bold py-3 rounded shadow-sm"
+          onClick={() => applyAndGenerate()}
+          disabled={isApplying}
+          className="w-full bg-teal-500 hover:bg-teal-600 disabled:bg-teal-300 disabled:cursor-not-allowed text-white text-sm font-bold py-3 rounded shadow-sm"
         >
-          Apply and Generate Control steps
+          {isApplying ? 'Generating control steps...' : 'Apply and Generate Control steps'}
         </button>
       </div>
     </div>

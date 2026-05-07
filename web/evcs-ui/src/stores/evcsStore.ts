@@ -7,6 +7,7 @@ import type {
   Mode,
   NormalizedSnapshot,
   SystemConfig,
+  VisualSnapshot,
   WarningDetail,
 } from '../types/evcs';
 
@@ -26,22 +27,30 @@ interface EvcsStore {
   // Snapshot (FR-02..06, FR-09) — store-normalized (no optional arrays).
   snapshot: NormalizedSnapshot | null;
 
-  // Player (FR-15) — Phase 3 will drive these
+  // Player (FR-14, FR-15)
   mode: Mode;
   stepSequence: ControlStepSequence | null;
   currentStepIndex: number;
+  // Captured edit-mode snapshot so exitPlayer can restore without a server roundtrip.
+  liveSnapshot: NormalizedSnapshot | null;
 
   // UX
   isLoading: boolean;
+  isApplying: boolean;
+  applyInfo: string | null;
   globalError: string | null;
 
-  // Actions (Phase 1 slice — config + topology only)
+  // Actions
   initSession: (cfg: SystemConfig, ports?: CarPortInput[]) => Promise<void>;
   updateSystemConfig: (cfg: SystemConfig) => Promise<void>;
   updateCarPort: (portId: number, patch: Partial<CarPortInput>) => Promise<void>;
   nudgeMaxRequired: (portId: number, delta: number) => Promise<void>;
   refreshSnapshot: () => Promise<void>;
   clearConfigErrors: () => void;
+  applyAndGenerate: () => Promise<void>;
+  stepForward: () => Promise<void>;
+  stepBack: () => Promise<void>;
+  exitPlayer: () => void;
 }
 
 const defaultPortsForCount = (recBdCount: number): CarPortInput[] =>
@@ -52,6 +61,16 @@ const defaultPortsForCount = (recBdCount: number): CarPortInput[] =>
     target: 0,
     priority: null,
   }));
+
+const normalizeSnapshot = (s: VisualSnapshot): NormalizedSnapshot => ({
+  rec_bds: s.rec_bds ?? [],
+  packs: s.packs ?? [],
+  relays: s.relays ?? [],
+  cars: s.cars ?? [],
+  total_power_kw: s.total_power_kw ?? 0,
+  total_requested_kw: s.total_requested_kw ?? 0,
+  warnings: s.warnings ?? [],
+});
 
 export const useEvcsStore = create<EvcsStore>((set, get) => ({
   sessionId: null,
@@ -64,7 +83,10 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
   mode: 'edit',
   stepSequence: null,
   currentStepIndex: 0,
+  liveSnapshot: null,
   isLoading: false,
+  isApplying: false,
+  applyInfo: null,
   globalError: null,
 
   initSession: async (cfg, ports) => {
@@ -81,7 +103,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     set({
       sessionId: data.session_id,
       systemConfig: data.system_config,
-      carPorts: data.car_ports,
+      carPorts: data.car_ports ?? [],
       mode: data.mode,
       stepSequence: data.step_sequence ?? null,
       currentStepIndex: data.current_step_index,
@@ -91,6 +113,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
   },
 
   updateSystemConfig: async (cfg) => {
+    if (get().mode === 'player') return;
     set({ isLoading: true, configErrors: [] });
 
     // 1. Validate config first
@@ -132,7 +155,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     }
     set({
       systemConfig: data.system_config,
-      carPorts: data.car_ports,
+      carPorts: data.car_ports ?? [],
       mode: data.mode,
       stepSequence: data.step_sequence ?? null,
       currentStepIndex: data.current_step_index,
@@ -142,6 +165,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
   },
 
   updateCarPort: async (portId, patch) => {
+    if (get().mode === 'player') return;
     const sid = get().sessionId;
     if (!sid) return;
 
@@ -166,7 +190,12 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
     }
 
     // 3. Replace local with server response to avoid drift.
-    set({ carPorts: data.car_ports });
+    set({
+      carPorts: data.car_ports ?? [],
+      mode: data.mode,
+      stepSequence: data.step_sequence ?? null,
+      currentStepIndex: data.current_step_index,
+    });
 
     // 4. Refresh snapshot ONLY when max_required changed (SPEC-WEB-UI §2.2).
     if ('max_required' in patch) {
@@ -175,6 +204,7 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
   },
 
   nudgeMaxRequired: async (portId, delta) => {
+    if (get().mode === 'player') return;
     const port = get().carPorts.find((p) => p.port_id === portId);
     if (!port) return;
     const clamped = Math.max(0, Math.min(600, port.max_required + delta));
@@ -190,20 +220,90 @@ export const useEvcsStore = create<EvcsStore>((set, get) => ({
       set({ globalError: 'Snapshot refresh failed — try the +/- button again' });
       return;
     }
-    // Pydantic default_factory=list fields come through as optional in the
-    // generated schema; normalize so components can rely on arrays existing.
-    set({
-      snapshot: {
-        rec_bds: data.rec_bds ?? [],
-        packs: data.packs ?? [],
-        relays: data.relays ?? [],
-        cars: data.cars ?? [],
-        total_power_kw: data.total_power_kw ?? 0,
-        total_requested_kw: data.total_requested_kw ?? 0,
-        warnings: data.warnings ?? [],
-      },
-    });
+    set({ snapshot: normalizeSnapshot(data) });
   },
 
   clearConfigErrors: () => set({ configErrors: [] }),
+
+  applyAndGenerate: async () => {
+    const sid = get().sessionId;
+    if (!sid) return;
+
+    set({ isApplying: true, applyInfo: null, globalError: null });
+
+    const { data, error, response } = await evcsApi.applyAndGenerate(sid);
+
+    if (error || !data) {
+      const status = response?.status;
+      let errMsg = 'Apply failed — try again';
+      const detail = (error as { detail?: { errors?: ErrorDetail[] } } | undefined)
+        ?.detail;
+      if (status === 422 && detail?.errors?.length) {
+        errMsg = detail.errors.map((e) => `${e.code}: ${e.message}`).join('; ');
+      }
+      set({ isApplying: false, globalError: errMsg });
+      return;
+    }
+
+    // No-change short-circuit (SPEC-WEB-API §FR-14: Present == Target).
+    if (data.total_steps === 0) {
+      set({
+        isApplying: false,
+        applyInfo: 'No change required — system already at target state',
+      });
+      return;
+    }
+
+    // Capture current edit-mode snapshot so exitPlayer can restore without a roundtrip.
+    const currentLive = get().snapshot;
+    const playerSnapshot = normalizeSnapshot(data.initial_state);
+
+    set({
+      isApplying: false,
+      mode: 'player',
+      stepSequence: data,
+      currentStepIndex: 0,
+      snapshot: playerSnapshot,
+      liveSnapshot: currentLive,
+      applyInfo: null,
+    });
+  },
+
+  stepForward: async () => {
+    const sid = get().sessionId;
+    if (!sid || get().mode !== 'player') return;
+    const { data, error } = await evcsApi.step(sid, 'forward');
+    if (error || !data) {
+      set({ globalError: 'Step navigation failed' });
+      return;
+    }
+    set({
+      currentStepIndex: data.current_step_index,
+      snapshot: normalizeSnapshot(data.snapshot),
+    });
+  },
+
+  stepBack: async () => {
+    const sid = get().sessionId;
+    if (!sid || get().mode !== 'player') return;
+    const { data, error } = await evcsApi.step(sid, 'back');
+    if (error || !data) {
+      set({ globalError: 'Step navigation failed' });
+      return;
+    }
+    set({
+      currentStepIndex: data.current_step_index,
+      snapshot: normalizeSnapshot(data.snapshot),
+    });
+  },
+
+  exitPlayer: () => {
+    const live = get().liveSnapshot;
+    set({
+      mode: 'edit',
+      currentStepIndex: 0,
+      snapshot: live ?? get().snapshot,
+      liveSnapshot: null,
+    });
+  },
 }));
