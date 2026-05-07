@@ -1,104 +1,118 @@
-import { useCallback, useMemo, useState } from 'react';
 import { useEvcsStore } from '../../stores/evcsStore';
-import type { ModulePowerStringResponse, SystemConfig } from '../../types/evcs';
-import { Button } from '../shared/Button';
-import { ErrorBanner } from '../shared/ErrorBanner';
-import { ModulePowerInput } from './ModulePowerInput';
-import { RecBdCountInput } from './RecBdCountInput';
+import type { SystemConfig } from '../../types/evcs';
 
-const DEFAULT_RAW = '50, 75, 75, 50';
-
-function ensureLength(arr: string[], n: number, fill: string): string[] {
-  if (arr.length === n) return arr;
-  if (arr.length > n) return arr.slice(0, n);
-  return [...arr, ...Array(n - arr.length).fill(fill)];
-}
+const SPRINT1_REC_BD_COUNT = 4;
+const SPRINT1_MODULE_POWERS = [50, 75, 75, 50];
+const SPRINT1_MODULE_POWERS_RAW = SPRINT1_MODULE_POWERS.join(', ');
 
 export function ConfigPanel() {
   const systemConfig = useEvcsStore((s) => s.systemConfig);
-  const configErrors = useEvcsStore((s) => s.configErrors);
   const isLoading = useEvcsStore((s) => s.isLoading);
   const updateSystemConfig = useEvcsStore((s) => s.updateSystemConfig);
-  const clearConfigErrors = useEvcsStore((s) => s.clearConfigErrors);
 
-  const initialCount = systemConfig?.rec_bd_count ?? 4;
-  const initialRaws = useMemo(
-    () =>
-      systemConfig?.rec_bds.map((b) => b.module_powers.join(', ')) ??
-      Array(initialCount).fill(DEFAULT_RAW),
-    [systemConfig, initialCount],
-  );
-
-  const [recBdCount, setRecBdCount] = useState(initialCount);
-  const [moduleStrings, setModuleStrings] = useState<string[]>(initialRaws);
-  const [parsed, setParsed] = useState<Record<number, ModulePowerStringResponse>>({});
-  const [showPriorityClearWarning, setShowPriorityClearWarning] = useState(false);
-
-  const onCountChange = (n: number) => {
-    if (systemConfig && n !== systemConfig.rec_bd_count) {
-      setShowPriorityClearWarning(true);
-    }
-    setRecBdCount(n);
-    setModuleStrings((prev) => ensureLength(prev, n, DEFAULT_RAW));
-  };
-
-  const onParsed = useCallback(
-    (recBdId: number, r: ModulePowerStringResponse) => {
-      setParsed((prev) => ({ ...prev, [recBdId]: r }));
-    },
-    [],
-  );
-
-  const allParsedClean =
-    moduleStrings.every((_, i) => {
-      const r = parsed[i + 1];
-      return r && r.errors.length === 0 && r.powers.length > 0;
-    });
-
-  const canApply = allParsedClean && !isLoading;
+  const recBdCount = systemConfig?.rec_bd_count ?? SPRINT1_REC_BD_COUNT;
+  const modulePowers =
+    systemConfig?.rec_bds[0]?.module_powers ?? SPRINT1_MODULE_POWERS;
+  const totalCapacityKw = recBdCount * modulePowers.reduce((a, b) => a + b, 0);
+  const totalPorts = recBdCount * 2;
 
   const onApply = async () => {
-    setShowPriorityClearWarning(false);
     const cfg: SystemConfig = {
-      rec_bd_count: recBdCount,
-      rec_bds: moduleStrings.slice(0, recBdCount).map((_, i) => ({
+      rec_bd_count: SPRINT1_REC_BD_COUNT,
+      rec_bds: Array.from({ length: SPRINT1_REC_BD_COUNT }, (_, i) => ({
         id: i + 1,
-        module_powers: parsed[i + 1]?.powers ?? [],
+        module_powers: [...SPRINT1_MODULE_POWERS],
       })),
     };
     await updateSystemConfig(cfg);
   };
 
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-bold text-slate-800">Configuration (FR-10 / FR-11)</h2>
+    <section className="flex flex-col gap-3" data-testid="config-panel">
+      <div className="bg-slate-700 text-white text-center py-2 rounded-md font-semibold text-sm">
+        配置 (Configuration)
+      </div>
 
-      <ErrorBanner errors={configErrors} onDismiss={clearConfigErrors} />
+      <ReadOnlyField
+        label="REC BD 數量"
+        value={String(recBdCount)}
+        note="動態 REC BD 配置 Sprint 2 上線"
+      />
 
-      <RecBdCountInput value={recBdCount} onChange={onCountChange} />
+      <ReadOnlyField
+        label="REC BD 模塊配置"
+        value={SPRINT1_MODULE_POWERS_RAW}
+        note="動態 module power 配置 Sprint 2 上線"
+      />
 
-      {showPriorityClearWarning && (
-        <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
-          REC BD count change will clear all Car Port priority assignments (FR-16).
+      <SummaryRow
+        label="總容量"
+        value={`${totalCapacityKw} kW`}
+        valueClass="text-green-600"
+      />
+
+      <SummaryRow
+        label="總充電槍數"
+        value={String(totalPorts)}
+        valueClass="text-teal-600"
+      />
+
+      <div className="bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-center">
+        <div className="text-xs font-semibold text-slate-700">硬體拓撲預覽</div>
+        <div className="text-[11px] text-slate-500">
+          {recBdCount} REC BD × {modulePowers.length} Groups × 2 Outputs = {totalPorts} Cars
         </div>
-      )}
-
-      <div className="flex flex-col gap-2">
-        {Array.from({ length: recBdCount }, (_, i) => (
-          <ModulePowerInput
-            key={i + 1}
-            recBdId={i + 1}
-            initialRaw={moduleStrings[i] ?? DEFAULT_RAW}
-            onParsed={onParsed}
-          />
-        ))}
       </div>
 
-      <div className="pt-1">
-        <Button onClick={onApply} disabled={!canApply}>
-          {isLoading ? 'Applying…' : 'Apply'}
-        </Button>
-      </div>
+      <button
+        type="button"
+        onClick={onApply}
+        disabled={isLoading}
+        className="w-full bg-teal-500 hover:bg-teal-600 disabled:bg-teal-300 disabled:cursor-not-allowed text-white text-sm font-bold py-2.5 rounded shadow-sm"
+      >
+        {isLoading ? 'Applying…' : 'Apply'}
+      </button>
     </section>
+  );
+}
+
+interface ReadOnlyFieldProps {
+  label: string;
+  value: string;
+  note: string;
+}
+
+function ReadOnlyField({ label, value, note }: ReadOnlyFieldProps) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-md px-3 py-2 flex items-center gap-3 flex-wrap">
+      <span className="text-sm text-slate-700 font-medium min-w-[120px]">
+        {label}:
+      </span>
+      <input
+        type="text"
+        value={value}
+        disabled
+        readOnly
+        className="flex-1 max-w-[220px] px-2 py-1 bg-slate-100 text-slate-600 border border-slate-200 rounded font-mono text-sm cursor-not-allowed"
+      />
+      <span className="text-[11px] text-amber-700 italic">{note}</span>
+    </div>
+  );
+}
+
+interface SummaryRowProps {
+  label: string;
+  value: string;
+  valueClass?: string;
+}
+
+function SummaryRow({ label, value, valueClass = 'text-slate-900' }: SummaryRowProps) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-md px-3 py-2 flex items-center gap-3">
+      <span className="text-sm text-slate-700 font-medium min-w-[120px]">
+        {label}:
+      </span>
+      <span className={`text-base font-bold ${valueClass}`}>{value}</span>
+    </div>
   );
 }

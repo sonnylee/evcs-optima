@@ -1,3 +1,5 @@
+// Sprint 1: not currently mounted — ConfigPanel uses ReadOnlyField placeholders.
+// Sprint 2 (FR-11): re-mount this for dynamic per-REC-BD module power lists.
 import { useEffect, useState } from 'react';
 import { evcsApi } from '../../api/evcsApiClient';
 import { useDebounce } from '../../hooks/useDebounce';
