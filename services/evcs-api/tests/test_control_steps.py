@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 from app.adapters import step_planner
 from app.adapters.evcs_core_adapter import (
     PrioritiesIncompleteError,
-    TargetExceedsCapacityError,
     generate_control_steps,
 )
 from app.schemas.car_port import CarPortInput
@@ -95,17 +94,27 @@ def test_identity_no_change_required():
     assert any("No change required" in w for w in seq.warnings)
 
 
-def test_target_exceeds_capacity_raises():
-    sys = _system(2)  # 2 × 250 kW = 500 kW total — validator rejects before engine
+def test_target_exceeds_capacity_warns_does_not_raise():
+    """F14.3a: Target overload is a warning, not a hard 422. Sequence is
+    still produced; engine truncates per-port to feasible allocation."""
+    sys = _system(4)  # 4 × 250 kW = 1000 kW total; 8 × 600 = 4800 kW > 1000
     ports = _ports_full(
-        2,
+        4,
         {
-            1: {"max_required": 600, "present": 0, "target": 300},
-            2: {"max_required": 600, "present": 0, "target": 300},
+            pid: {
+                "max_required": 600,
+                "present": 0,
+                "target": 600,
+                "priority": pid,
+            }
+            for pid in range(1, 9)
         },
     )
-    with pytest.raises(TargetExceedsCapacityError):
-        asyncio.run(generate_control_steps(sys, ports))
+    seq = asyncio.run(generate_control_steps(sys, ports))
+    assert seq.total_steps > 0
+    assert any("exceeds total station capacity" in w for w in seq.warnings), (
+        f"expected TARGET_EXCEEDS_CAPACITY warning, got {seq.warnings}"
+    )
 
 
 def test_priorities_insufficient_raises():
@@ -377,20 +386,24 @@ def test_route_apply_and_generate_404_for_missing_session(client: TestClient):
     assert r.status_code == 404
 
 
-def test_route_apply_and_generate_422_target_over_capacity(client: TestClient):
-    # 4 REC BDs × 250 kW = 1000 kW capacity. Two ports at 600 kW target = 1200 kW > 1000.
+def test_route_apply_and_generate_target_over_capacity_warns(client: TestClient):
+    """F14.3a: Target overload returns 200 with warning, not 422."""
     cfg = {
         "rec_bd_count": 4,
         "rec_bds": [
             {"id": i + 1, "module_powers": [50, 75, 75, 50]} for i in range(4)
         ],
     }
+    # 4 REC BDs × 250 kW = 1000 kW capacity. 8 ports × 600 = 4800 > 1000.
     ports = [
-        {"port_id": 1, "max_required": 600, "present": 0, "target": 600, "priority": 1},
-        {"port_id": 2, "max_required": 600, "present": 0, "target": 600, "priority": 2},
-    ] + [
-        {"port_id": pid, "max_required": 0, "present": 0, "target": 0, "priority": pid}
-        for pid in range(3, 9)
+        {
+            "port_id": pid,
+            "max_required": 600,
+            "present": 0,
+            "target": 600,
+            "priority": pid,
+        }
+        for pid in range(1, 9)
     ]
     r = client.post(
         "/api/v1/sessions", json={"system_config": cfg, "car_ports": ports}
@@ -398,9 +411,12 @@ def test_route_apply_and_generate_422_target_over_capacity(client: TestClient):
     sid = r.json()["session_id"]
 
     r2 = client.post(f"/api/v1/sessions/{sid}/apply-and-generate")
-    assert r2.status_code == 422
+    assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["detail"]["errors"][0]["code"] == "TARGET_EXCEEDS_CAPACITY"
+    assert body["total_steps"] >= 0
+    assert any("exceeds total station capacity" in w for w in body["warnings"]), (
+        f"expected TARGET_EXCEEDS_CAPACITY warning, got {body['warnings']}"
+    )
 
 
 def test_route_apply_and_generate_422_priorities_insufficient(client: TestClient):

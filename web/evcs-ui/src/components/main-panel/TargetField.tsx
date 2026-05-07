@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useEvcsStore } from '../../stores/evcsStore';
-import { clampMaxRequired } from '../../utils/validation';
+import { clampOnly } from '../../utils/validation';
 
 interface Props {
   portId: number;
@@ -21,12 +21,12 @@ export function TargetField({ portId, value }: Props) {
       setDraft(String(value));
       return;
     }
-    const rounded = clampMaxRequired(num);
-    if (rounded === value) {
-      setDraft(String(rounded));
+    const clamped = clampOnly(num);
+    if (clamped === value) {
+      setDraft(String(clamped));
       return;
     }
-    update(portId, { target: rounded });
+    update(portId, { target: clamped });
   };
 
   return (

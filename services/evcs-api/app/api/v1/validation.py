@@ -17,7 +17,7 @@ from app.services.validation_service import (
     validate_module_powers,
     validate_priorities,
     validate_rec_bd_count,
-    validate_target_within_capacity,
+    warn_target_within_capacity,
 )
 
 router = APIRouter(prefix="/validate", tags=["validation"])
@@ -82,7 +82,7 @@ def validate_car_ports(req: CarPortBatchValidateRequest) -> CarPortBatchValidate
     if req.system_config is not None:
         errors.extend(validate_car_port_count(normalized, req.system_config))
         errors.extend(validate_priorities(normalized, req.system_config.rec_bd_count))
-        errors.extend(validate_target_within_capacity(normalized, req.system_config))
+        warnings.extend(warn_target_within_capacity(normalized, req.system_config))
     else:
         # best-effort: still check priority duplicates against whatever count caller implies
         # (use max priority + max port_id // 2 as a heuristic N)

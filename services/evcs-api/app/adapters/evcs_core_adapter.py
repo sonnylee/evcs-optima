@@ -19,7 +19,7 @@ from app.schemas.control_step import ControlStepSequence
 from app.schemas.error import ErrorDetail
 from app.services.validation_service import (
     priorities_ready_for_apply,
-    validate_target_within_capacity,
+    warn_target_within_capacity,
 )
 from app.services.web_session_engine import WebSessionEngine
 
@@ -32,10 +32,6 @@ class AdapterError(Exception):
     def __init__(self, errors: List[ErrorDetail]):
         self.errors = errors
         super().__init__("; ".join(e.message for e in errors))
-
-
-class TargetExceedsCapacityError(AdapterError):
-    pass
 
 
 class PrioritiesIncompleteError(AdapterError):
@@ -53,7 +49,6 @@ async def _present_warnings(
 
     Detected cases:
     * ``present > max_required`` — present exceeds the per-port ceiling.
-    * ``present`` not aligned to 25 kW.
     * Sum of ``present`` exceeds station capacity (resources unavailable).
     * The recomputed allocation under ``present`` does not match the
       user-entered ``present`` (i.e. station can't actually deliver this).
@@ -66,10 +61,6 @@ async def _present_warnings(
             warnings.append(
                 f"Port {cp.port_id}: Present ({cp.present} kW) exceeds Max Required "
                 f"({cp.max_required} kW); suggested {cp.max_required} kW."
-            )
-        if cp.present % 25 != 0:
-            warnings.append(
-                f"Port {cp.port_id}: Present ({cp.present} kW) is not a multiple of 25 kW."
             )
 
     total_present = sum(cp.present for cp in car_ports)
@@ -106,11 +97,8 @@ async def generate_control_steps(
 ) -> ControlStepSequence:
     """Validate inputs, build endpoint snapshots, and plan the transition."""
 
-    # 1. Hard pre-validation (FR-14)
-    cap_errors = validate_target_within_capacity(car_ports, system_config)
-    if cap_errors:
-        raise TargetExceedsCapacityError(cap_errors)
-
+    # 1. Hard pre-validation — only PRIORITIES_INSUFFICIENT remains.
+    #    F14.3a: target overload is now a soft warning, not a 422.
     if not priorities_ready_for_apply(car_ports):
         raise PrioritiesIncompleteError(
             [
@@ -125,8 +113,10 @@ async def generate_control_steps(
             ]
         )
 
-    # 2. Soft warnings (do not abort)
+    # 2. Soft warnings (do not abort) — Present anomalies + Target overload.
     warnings = await _present_warnings(system_config, car_ports)
+    target_warnings = warn_target_within_capacity(car_ports, system_config)
+    warnings.extend(w.message for w in target_warnings)
 
     # 3. Endpoint snapshots — two independent WebSessionEngine instances,
     #    each built from OFF and settled to its own demand-specific steady

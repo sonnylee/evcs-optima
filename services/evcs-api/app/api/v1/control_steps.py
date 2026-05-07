@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from app.adapters.evcs_core_adapter import (
     AdapterError,
     PrioritiesIncompleteError,
-    TargetExceedsCapacityError,
     generate_control_steps,
 )
 from app.schemas.control_step import ControlStepSequence
@@ -53,7 +52,7 @@ async def apply_and_generate(
 
     try:
         seq = await generate_control_steps(s.system_config, s.car_ports)
-    except (TargetExceedsCapacityError, PrioritiesIncompleteError) as exc:
+    except PrioritiesIncompleteError as exc:
         raise _adapter_to_http(exc) from exc
 
     store.set_step_sequence(session_id, seq)

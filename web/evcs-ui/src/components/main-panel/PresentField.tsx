@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useEvcsStore } from '../../stores/evcsStore';
-import { clampMaxRequired } from '../../utils/validation';
+import { clampPresent } from '../../utils/validation';
 
 interface Props {
   portId: number;
@@ -17,16 +17,19 @@ export function PresentField({ portId, value }: Props) {
 
   const commit = () => {
     const num = parseInt(draft, 10);
-    if (Number.isNaN(num)) {
+    // F14.3a req #2: Present must be ≥ 1 when entered. NaN or <1 → revert.
+    // (Default value 0 is allowed when never edited; this guard rejects the
+    // *act of entering* 0, not the persisted-default 0.)
+    if (Number.isNaN(num) || num < 1) {
       setDraft(String(value));
       return;
     }
-    const rounded = clampMaxRequired(num);
-    if (rounded === value) {
-      setDraft(String(rounded));
+    const clamped = clampPresent(num);
+    if (clamped === value) {
+      setDraft(String(clamped));
       return;
     }
-    update(portId, { present: rounded });
+    update(portId, { present: clamped });
   };
 
   return (
@@ -39,7 +42,8 @@ export function PresentField({ portId, value }: Props) {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
         }}
         className="w-16 text-right border border-slate-300 rounded px-2 py-1 text-sm font-mono bg-white"
-        aria-label={`Car ${portId} Present`}
+        aria-label={`Car ${portId} Present (minimum 1 kW)`}
+        title="Present must be ≥ 1 kW"
       />
       <span className="text-xs text-slate-600">kW</span>
     </div>

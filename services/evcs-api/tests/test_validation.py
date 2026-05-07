@@ -42,7 +42,8 @@ def _cfg(rec_bd_count: int = 1) -> dict:
     }
 
 
-def test_car_port_clamp_and_round(client: TestClient):
+def test_car_port_clamp_no_longer_rounds(client: TestClient):
+    """F14.3a: 25-kW rounding removed; values preserved verbatim, only clamped."""
     payload = {
         "batch": {
             "ports": [
@@ -59,10 +60,11 @@ def test_car_port_clamp_and_round(client: TestClient):
     by_id = {p["port_id"]: p for p in body["ports"]}
     assert by_id[1]["max_required"] == 600  # clamped above
     assert by_id[2]["max_required"] == 0    # clamped below
-    assert by_id[3]["max_required"] == 125  # rounded down
+    assert by_id[3]["max_required"] == 130  # NOT rounded — preserved verbatim
     assert by_id[4]["max_required"] == 250
     warn_codes = {w["code"] for w in body["warnings"]}
-    assert {"ABOVE_MAX", "BELOW_MIN", "NOT_MULTIPLE_OF_25"} <= warn_codes
+    assert {"ABOVE_MAX", "BELOW_MIN"} <= warn_codes
+    assert "NOT_MULTIPLE_OF_25" not in warn_codes  # F14.3a: this code is gone
 
 
 # ---------- FR-16 priority rules ----------------------------------------
@@ -117,7 +119,8 @@ def test_apply_ready_requires_two_priorities(client: TestClient):
 
 # ---------- FR-13 target-over-capacity ----------------------------------
 
-def test_target_over_capacity_rejected(client: TestClient):
+def test_target_over_capacity_warns(client: TestClient):
+    """F14.3a: target overload at the validate endpoint is a warning, not error."""
     # 1 REC BD = 250 kW. Two ports each targeting 200 kW → 400 kW > 250 kW.
     payload = {
         "batch": {
@@ -129,8 +132,10 @@ def test_target_over_capacity_rejected(client: TestClient):
         "system_config": _cfg(1),
     }
     body = client.post("/api/v1/validate/car-ports", json=payload).json()
-    codes = {e["code"] for e in body["errors"]}
-    assert "TARGET_EXCEEDS_CAPACITY" in codes
+    error_codes = {e["code"] for e in body["errors"]}
+    warning_codes = {w["code"] for w in body["warnings"]}
+    assert "TARGET_EXCEEDS_CAPACITY" not in error_codes
+    assert "TARGET_EXCEEDS_CAPACITY" in warning_codes
 
 
 # ---------- FR-10 system config -----------------------------------------

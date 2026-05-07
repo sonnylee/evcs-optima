@@ -83,12 +83,8 @@ def validate_module_powers(powers: List[int], field_prefix: str = "module_powers
 
 
 # ---------------------------------------------------------------------------
-# FR-12 Max Required normalization (clamp + round-to-25)
+# FR-12 Max Required normalization (clamp only — F14.3a removed 25-kW rounding)
 # ---------------------------------------------------------------------------
-
-def _round_to_step(v: int) -> int:
-    return int(round(v / STEP_KW)) * STEP_KW
-
 
 def normalize_power(
     value: int,
@@ -96,7 +92,8 @@ def normalize_power(
     lo: int = MAX_REQUIRED_MIN,
     hi: int = MAX_REQUIRED_MAX,
 ) -> Tuple[int, List[WarningDetail]]:
-    """Clamp to [lo, hi] and round to nearest 25 kW. Emits a warning per adjustment."""
+    """Clamp to [lo, hi]. F14.3a: 25-kW rounding removed — engine quantizes
+    internally, but stored values preserve user input."""
 
     warnings: List[WarningDetail] = []
     original = value
@@ -124,20 +121,6 @@ def normalize_power(
             )
         )
         v = hi
-
-    if v % STEP_KW != 0:
-        rounded = _round_to_step(v)
-        rounded = max(lo, min(hi, rounded))
-        warnings.append(
-            WarningDetail(
-                code="NOT_MULTIPLE_OF_25",
-                field=field,
-                message=f"value {v} rounded to {rounded} kW (must be multiple of {STEP_KW})",
-                original_value=v,
-                adjusted_value=rounded,
-            )
-        )
-        v = rounded
 
     return v, warnings
 
@@ -237,24 +220,26 @@ def priorities_ready_for_apply(car_ports: List[CarPortInput]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# FR-13 Target-over-capacity check
+# FR-13 Target-over-capacity check (F14.3a: warning, not error)
 # ---------------------------------------------------------------------------
 
-def validate_target_within_capacity(
+def warn_target_within_capacity(
     car_ports: List[CarPortInput], system: SystemConfig
-) -> List[ErrorDetail]:
-    """Sum of Target across all ports must not exceed total station capacity."""
+) -> List[WarningDetail]:
+    """F14.3a: Sum of Target may exceed total station capacity — warning, not
+    error. Engine quantizes per-port to ≤ available pack capacity; overload
+    is silently truncated (spike obs 5)."""
 
     total_target = sum(cp.target for cp in car_ports)
     total_capacity = system.total_capacity_kw
     if total_target > total_capacity:
         return [
-            ErrorDetail(
+            WarningDetail(
                 code="TARGET_EXCEEDS_CAPACITY",
                 field="car_ports.target",
                 message=(
                     f"sum of Target ({total_target} kW) exceeds total station "
-                    f"capacity ({total_capacity} kW)"
+                    f"capacity ({total_capacity} kW); some demand will not be met"
                 ),
             )
         ]

@@ -1,5 +1,6 @@
 import { usePlayerKeyboard } from '../../hooks/usePlayerKeyboard';
 import { PlayerControls } from './PlayerControls';
+import { PlayerWarnings } from './PlayerWarnings';
 import { StepDescription } from './StepDescription';
 import { StepProgress } from './StepProgress';
 import { SystemStatusSummary } from './SystemStatusSummary';
@@ -16,6 +17,7 @@ export function StepPlayer() {
       <StepProgress />
       <StepDescription />
       <SystemStatusSummary />
+      <PlayerWarnings />
 
       <div className="flex-1" />
 

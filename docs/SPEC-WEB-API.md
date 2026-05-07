@@ -485,7 +485,7 @@ Present 欄與 Target 欄均需支援手動輸入數值，讓使用者能自由�
 |------|----------|
 | Present = Target（無差異） | 提示「No change required，系統狀態已是目標狀態」，不進入播放器 |
 | 所有 Target = 0kW | 產生關閉所有路線的步驟序列 |
-| Target 超過系統總容量 | 提示「超過總容量，請調整 Target 設定」，不計算 |
+| Target 超過系統總容量 | 警示但仍依物理 25 kW 量化產生控制步驟（F14.3a：warning，非 blocker；engine 自動截斷至各 port 可分配上限） |
 | 輸入包含非法值 | 阻止計算，標示問題欄位，提示修正 |
 | Present 為不合理總值 | 在受限於供給功率情況之下，警示異常的 Present 欄位並給出合理建議值，但系統持續產生逐條控制步驟序列 |
 | 來車順序的優先級 | 功率配置會依介面設計由上至下進行功率分配 |
@@ -609,7 +609,7 @@ FR-14 計算完成後，選擇介面進入播放器模式，使用者可透過 F
 | 將 Web Input 轉成 Core Input | FR-13, FR-14, FR-16 |
 | 將 Core Output 轉成 API Step Sequence | FR-14, FR-15 |
 | 加入不合理 Present warning | FR-14 |
-| 加入 Target 超過總容量檢查 | FR-14 |
+| Target 超過總容量警告 (warning, not blocker) | FR-14 |
 
 完成條件：API 可依 Present → Target 產生控制步驟，每個 step 都包含完整 snapshot。
 
