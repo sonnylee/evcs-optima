@@ -458,8 +458,14 @@ Timing Diagram 直接依 `dt_index` 繪製每個 Relay 的切換點（from_state
 
 | 約束 | 說明 |
 |---|---|
-| 最小保證功率 | 每個 Output 啟動充電最低 125kW |
-| Output 的 Relay 切換時機 | 在準備好 125kW 之後才能閉合 Relay
+| 最小保證功率 | Output relay close 的最小硬體保證:avail >= X,其中 X 是該 output 的最小充電保證,定義為 anchor group + 鄰接 inner group 的硬體 capacity 總和。
+N=4 / 2 outputs 配置下:
+
+output_0_min_guarantee = module_powers[0] + module_powers[1]
+output_1_min_guarantee = module_powers[3] + module_powers[2]
+
+default [50, 75, 75, 50] 是這個公式的特例,其值為 125 kW; 而 X 隨 module_powers 動態決定。|
+| Output 的 Relay 切換時機 | 在準備好 "最小保證功率" 之後才能閉合 Relay
 | 連續區間約束 | 所有分配給同一 Output 的 Group 必須形成不間斷的連續區間 |
 | Ring Topology 約束 | 只有物理相鄰的 MCU 才能進行功率借還 |
 | 借電優先級 | 右 > 左 > 雙側 |
