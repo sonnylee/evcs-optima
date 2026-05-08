@@ -21,6 +21,7 @@ import pytest
 from simulation.communication.messages import Stop, Tick
 from simulation.environment.simulation_engine import SimulationEngine
 from simulation.hardware.relay import RelayState
+from simulation.modules.mcu_control import output_min_guarantee_kw
 from simulation.modules.vehicle import Vehicle, VehicleState
 from simulation.utils.config_loader import (
     InitialVehiclePlacement,
@@ -202,17 +203,20 @@ def assert_engine_invariants(engine: SimulationEngine) -> None:
                 )
             seen[abs_g] = owner
 
-    # 2) Every active output (relay closed + vehicle present) has ≥125 kW (SPEC §11).
+    # 2) Every active output (relay closed + vehicle present) has ≥ per-Output
+    # SPEC §11 minimum guarantee (default `[50,75,75,50]` config = 125 kW).
     for i, output in enumerate(engine._all_outputs):
         mcu_idx, local_idx = i // 2, i % 2
-        out_relay = engine.station.boards[mcu_idx].output_relays[local_idx]
+        board = engine.station.boards[mcu_idx]
+        out_relay = board.output_relays[local_idx]
         if (
             out_relay.state == RelayState.CLOSED
             and output.connected_vehicle is not None
         ):
-            if output.available_power_kw + 1e-6 < 125:
+            floor = output_min_guarantee_kw(board.module_powers, local_idx)
+            if output.available_power_kw + 1e-6 < floor:
                 raise AssertionError(
-                    f"Output {i}: closed with available={output.available_power_kw} < 125 kW"
+                    f"Output {i}: closed with available={output.available_power_kw} < {floor} kW"
                 )
 
     # 3) Sum of available across active outputs ≤ system total.
@@ -308,9 +312,12 @@ def _make_static_test(scenario_id: str, label: str, on_outputs: list[int]):
                 if i in on_set:
                     if output.connected_vehicle is None:
                         raise AssertionError(f"Output {i} expected ON but no vehicle")
-                    if output.available_power_kw + 1e-6 < 125:
+                    mcu_idx, local_idx = i // 2, i % 2
+                    board = engine.station.boards[mcu_idx]
+                    floor = output_min_guarantee_kw(board.module_powers, local_idx)
+                    if output.available_power_kw + 1e-6 < floor:
                         raise AssertionError(
-                            f"Output {i}: available={output.available_power_kw} < 125 kW"
+                            f"Output {i}: available={output.available_power_kw} < {floor} kW"
                         )
                 else:
                     if output.connected_vehicle is not None:

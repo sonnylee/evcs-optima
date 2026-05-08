@@ -15,6 +15,7 @@ from app.schemas.car_port import CarPortInput
 from app.schemas.config import SystemConfig
 from app.schemas.snapshot import VisualSnapshot
 from app.services.web_session_engine import WebSessionEngine
+from simulation.modules.mcu_control import output_min_guarantee_kw
 
 
 # ── Fixture-style builders (mirror tests/test_snapshot.py) ─────────────────
@@ -77,14 +78,20 @@ def _assert_snapshot_invariants(snap: VisualSnapshot, system: SystemConfig) -> N
     keys = [(p.rec_bd_id, p.pack_index) for p in snap.packs]
     assert len(keys) == len(set(keys)), "Pack list contains duplicates"
 
-    # 2. Every CLOSED output relay has allocated_kw >= 125 (SPEC §11).
+    # 2. Every CLOSED output relay has allocated_kw >= per-Output SPEC §11
+    # minimum guarantee (default `[50,75,75,50]` config = 125 kW).
     cars_by_port = {c.port_id: c for c in snap.cars}
     for relay in snap.relays:
         if relay.kind == "output" and relay.state == "Closed":
             car = cars_by_port[relay.owner_port_id]
-            assert car.allocated_kw >= 125, (
+            bd_idx = (relay.owner_port_id - 1) // 2
+            output_local_idx = (relay.owner_port_id - 1) % 2
+            floor = output_min_guarantee_kw(
+                system.rec_bds[bd_idx].module_powers, output_local_idx
+            )
+            assert car.allocated_kw >= floor, (
                 f"output relay {relay.id} closed with allocated_kw={car.allocated_kw} "
-                f"< 125 (SPEC §11)"
+                f"< {floor} (SPEC §11)"
             )
 
     # 3. Σ allocated_kw <= system.total_capacity_kw.

@@ -23,6 +23,7 @@ from app.adapters.evcs_core_adapter import (
 )
 from app.schemas.car_port import CarPortInput
 from app.schemas.config import RecBdConfig, SystemConfig
+from simulation.modules.mcu_control import output_min_guarantee_kw
 
 
 # ---------------------------------------------------------------------------
@@ -141,21 +142,24 @@ def test_arrival_holds_output_open_until_125kw():
     seq = asyncio.run(generate_control_steps(sys, ports))
     assert seq.total_steps > 0
 
-    # Walk every emitted step. While allocation < 125 kW for port 1, Output must be Open.
+    # SPEC §11 per-Output 0 minimum guarantee for default `[50,75,75,50]` = 125 kW.
+    floor = output_min_guarantee_kw([50, 75, 75, 50], 0)
+
+    # Walk every emitted step. While allocation < floor for port 1, Output must be Open.
     last_open_idx = -1
     closed_idx = -1
     for i, step in enumerate(seq.steps):
         car = _car(step.snapshot, 1)
         relay = _output_relay(step.snapshot, 1)
-        if car.allocated_kw < 125:
+        if car.allocated_kw < floor:
             assert relay.state == "Open", (
-                f"step {i}: alloc={car.allocated_kw} < 125 but Output {relay.state}"
+                f"step {i}: alloc={car.allocated_kw} < {floor} but Output {relay.state}"
             )
             last_open_idx = i
         elif relay.state == "Closed" and closed_idx == -1:
             closed_idx = i
 
-    assert closed_idx != -1, "Output never closes — should close once ≥125 kW reached"
+    assert closed_idx != -1, f"Output never closes — should close once ≥{floor} kW reached"
     assert closed_idx > last_open_idx
     # The engagement step description should mention closing the output relay.
     assert "Close M1.O1" in seq.steps[closed_idx].description
@@ -176,12 +180,14 @@ def test_arrival_below_125kw_never_closes_output():
         4, {1: {"max_required": 75, "present": 0, "target": 75}}
     )
     seq = asyncio.run(generate_control_steps(sys, ports))
+    # SPEC §11 per-Output 0 minimum guarantee for default `[50,75,75,50]` = 125 kW.
+    floor = output_min_guarantee_kw([50, 75, 75, 50], 0)
     for step in seq.steps:
         car = _car(step.snapshot, 1)
         relay = _output_relay(step.snapshot, 1)
-        if car.allocated_kw < 125:
+        if car.allocated_kw < floor:
             assert relay.state == "Open", (
-                f"alloc={car.allocated_kw} kW < 125 but Output {relay.state}"
+                f"alloc={car.allocated_kw} kW < {floor} but Output {relay.state}"
             )
 
 

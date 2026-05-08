@@ -47,13 +47,13 @@ def test_arrival_3phase_relay_sequence(event_log):
     assert state.pending_intergroup_close == 0
     assert state.pending_output_relay_close == 2
 
-    # Tick T+3: output relay closes (available >= 125kW)
+    # Tick T+3: output relay closes (available >= per-Output SPEC §11 min guarantee; default 125 kW)
     mcu._advance_relay_phases(state)
     assert state.pending_output_relay_close == 0
     assert board.output_relays[0].state == RelayState.CLOSED
 
 
-# TC-PHASE-02: available < 125kW — output relay stays open
+# TC-PHASE-02: available < per-Output SPEC §11 min guarantee (default 125 kW) — output relay stays open
 def test_output_relay_blocked_insufficient_power(event_log):
     mcu, board, ma, _ = _make_mcu(event_log)
     state = mcu._output_states[0]
@@ -67,7 +67,7 @@ def test_output_relay_blocked_insufficient_power(event_log):
     mcu._advance_relay_phases(state)  # 1→2
     mcu._advance_relay_phases(state)  # intergroup fires, output escalated to 2
 
-    # Disable all SMRs so _sync_output calculates < 125kW
+    # Disable all SMRs so _sync_output calculates 0 kW (< per-Output SPEC §11 min guarantee)
     for g in board.groups:
         for smr in g.smrs:
             smr.enabled = False
