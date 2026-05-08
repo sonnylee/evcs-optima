@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from simulation.base import SimulationModule
 from simulation.data.module_assignment import ModuleAssignment
@@ -31,6 +31,7 @@ class RectifierBoard(SimulationModule):
         event_log: RelayEventLog,
         num_mcus: int = 1,
         has_left_bridge: bool = False,
+        module_powers: Optional[list[int]] = None,
     ):
         self.mcu_id = mcu_id
         self.num_mcus = num_mcus
@@ -41,9 +42,31 @@ class RectifierBoard(SimulationModule):
         self.relay_matrix = RelayMatrix(mcu_id=mcu_id, num_mcus=num_mcus)
         self.module_assignment = ModuleAssignment(mcu_id=mcu_id, num_mcus=num_mcus)
 
+        # S2.2: derive per-instance group_configs (SMR-count list). When
+        # caller supplies module_powers (kW values), validate and convert;
+        # otherwise fall back to the module-level GROUP_CONFIGS so existing
+        # callers (tests + Sprint 1 baseline) stay byte-identical.
+        if module_powers is None:
+            self.group_configs: list[int] = GROUP_CONFIGS
+        else:
+            if len(module_powers) != 4:
+                raise ValueError(
+                    f"module_powers must have length 4, got {len(module_powers)}"
+                )
+            for p in module_powers:
+                if p < 50:
+                    raise ValueError(
+                        f"module_powers entry {p} below 50 kW minimum"
+                    )
+                if p % 25 != 0:
+                    raise ValueError(
+                        f"module_powers entry {p} not a multiple of 25 kW"
+                    )
+            self.group_configs = [p // 25 for p in module_powers]
+
         # Build 4 SMR Groups
         self.groups: list[SMRGroup] = []
-        for i, num_smrs in enumerate(GROUP_CONFIGS):
+        for i, num_smrs in enumerate(self.group_configs):
             self.groups.append(SMRGroup(f"{prefix}_G{i}", num_smrs))
 
         # Absolute output indices used by Relay/Output to address the

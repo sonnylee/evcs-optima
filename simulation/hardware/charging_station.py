@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, List, Optional
 
 from simulation.base import SimulationModule
 from simulation.hardware.rectifier_board import RectifierBoard
@@ -14,7 +14,13 @@ class ChargingStation(SimulationModule):
     and verified by the boundary-consistency check (SPEC §9).
     """
 
-    def __init__(self, mcu_id: int = 0, event_log: RelayEventLog | None = None, num_mcus: int = 1):
+    def __init__(
+        self,
+        mcu_id: int = 0,
+        event_log: RelayEventLog | None = None,
+        num_mcus: int = 1,
+        module_powers_per_mcu: Optional[List[List[int]]] = None,
+    ):
         self.mcu_id = mcu_id  # kept for back-compat (legacy single-MCU demos)
         self.num_mcus = num_mcus
         self.event_log = event_log if event_log is not None else RelayEventLog()
@@ -36,6 +42,9 @@ class ChargingStation(SimulationModule):
                 event_log=self.event_log,
                 num_mcus=num_mcus,
                 has_left_bridge=has_left_bridge(i),
+                module_powers=(
+                    module_powers_per_mcu[i] if module_powers_per_mcu else None
+                ),
             )
             for i in range(num_mcus)
         ]

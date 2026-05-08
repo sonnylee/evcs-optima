@@ -184,6 +184,9 @@ class WebSessionEngine:
             num_mcus=self._system_config.rec_bd_count,
             vehicle_profiles=list(profiles.values()),
             initial_vehicles=placements,
+            module_powers_per_mcu=[
+                bd.module_powers for bd in self._system_config.rec_bds
+            ],
         )
     
     def _log_engagement_state(self) -> None:

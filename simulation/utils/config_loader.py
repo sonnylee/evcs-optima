@@ -2,6 +2,7 @@ import csv
 import json
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -29,6 +30,9 @@ class SimulationConfig:
     # SPEC §6.1/§6.2: borrow/return only fires after the trigger condition
     # has held for N consecutive steps. Tunable per run.
     consecutive_threshold: int = 3
+    # S2.2: per-MCU module power list, e.g. [[50, 75, 75, 50], ...]. None →
+    # fall back to RectifierBoard default (Sprint 1 baseline shape).
+    module_powers_per_mcu: Optional[list[list[int]]] = None
 
 
 _CSV_PATH = os.path.join(

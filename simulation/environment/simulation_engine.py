@@ -37,7 +37,10 @@ class SimulationEngine:
         self.snapshots = self.db.table("snapshots")
 
         self.station = ChargingStation(
-            mcu_id=0, event_log=self.event_log, num_mcus=config.num_mcus,
+            mcu_id=0,
+            event_log=self.event_log,
+            num_mcus=config.num_mcus,
+            module_powers_per_mcu=config.module_powers_per_mcu,
         )
         self.station.initialize(dt_index=0)
 
