@@ -121,19 +121,6 @@ _ASYMMETRIC_4 = [
 ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "S2.5 step_planner gap. With BD1=[50,50,50,50], the hardcoded "
-        "'anchor + initial 2 groups' allocation in mcu_control yields only "
-        "50+50 = 100 kW pre-settle — *below* SPEC §11's 125 kW minimum-"
-        "guarantee for closing the Output relay. Settle doesn't recover "
-        "(no cross-BD borrow triggered). Observed engagement_avail=100 kW, "
-        "output_relay=CLOSED (also a §11 violation: relay closed below "
-        "125 kW threshold). S2.5 must rework the initial-group selection "
-        "to be module_powers-aware, not the dim-A hardcoded [G0, G1]."
-    ),
-)
 def test_snapshot_n4_asymmetric_with_cross_bd_borrow(client: TestClient):
     """Weak assertions: route returns sane snapshot, port 1 is Active,
     BD1 is fully engaged. Does NOT assert cross-BD borrow happened."""
@@ -158,15 +145,6 @@ def test_snapshot_n4_asymmetric_with_cross_bd_borrow(client: TestClient):
     assert 125 <= allocated <= 250, f"Port 1 allocated {allocated} kW out of bounds"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "S2.5 step_planner cross-BD borrow validation. With BD1=[50,50,50,50]=200kW "
-        "and a 250kW car at port 1, settle should borrow 50 kW from BD2 via the "
-        "B_1_2 bridge. Marked strict=False so an unexpected pass is reported (Sprint 2 "
-        "win) without breaking CI."
-    ),
-)
 def test_snapshot_n4_asymmetric_cross_bd_borrow_actually_engages(client: TestClient):
     """Strong assertions: full 250 kW allocated, BD2 lends ≥1 pack to port 1,
     bridge B_1_2 closed. Pinpoints whether step_planner correctly handles
