@@ -63,7 +63,6 @@ def _relay(snap: dict, rid: str) -> dict:
 # Basic allocation
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_zero_demand_all_idle(client: TestClient):
     snap = _snapshot(client, _cfg(1), _ports([(1, 0, None), (2, 0, None)]))
     assert all(bd["status"] == "Idle" for bd in snap["rec_bds"])
@@ -73,7 +72,6 @@ def test_zero_demand_all_idle(client: TestClient):
     assert all(r["state"] == "Open" for r in snap["relays"])
 
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_single_port_claims_packs_from_home(client: TestClient):
     # Port 1 of REC BD 1 wants 125 kW → 5 packs, all from REC BD 1 (home has 10).
     snap = _snapshot(client, _cfg(2), _ports([(1, 125, None), (2, 0, None), (3, 0, None), (4, 0, None)]))
@@ -127,7 +125,6 @@ def test_overflow_borrows_from_right_neighbor(client: TestClient):
 # FR-03 pack color = consuming port's home REC BD color
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_pack_color_follows_consumer(client: TestClient):
     snap = _snapshot(client, _cfg(2), _ports([(1, 300, 1), (2, 0, 2), (3, 0, 3), (4, 0, 4)]))
     color_by_bd = {bd["id"]: bd["color"] for bd in snap["rec_bds"]}
@@ -145,7 +142,6 @@ def test_pack_color_follows_consumer(client: TestClient):
 # FR-04 inter-group relay closes when one port spans two groups
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_inter_group_relay_closes_when_spanning(client: TestClient):
     # Port 1 with 75 kW = 3 packs. REC BD 1 module 0 has 2 packs (0,1). So pack 2
     # is consumed from module 1 → inter-group relay R2 (between mod 0 and mod 1) closes.
@@ -155,7 +151,6 @@ def test_inter_group_relay_closes_when_spanning(client: TestClient):
     assert _relay(snap, "M1.R4")["state"] == "Open"
 
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_inter_group_relay_open_when_confined_to_one_group(client: TestClient):
     # Port 1 with 50 kW = 2 packs — fills module 0 exactly, no R2 close.
     snap = _snapshot(client, _cfg(1), _ports([(1, 50, None), (2, 0, None)]))
@@ -166,7 +161,6 @@ def test_inter_group_relay_open_when_confined_to_one_group(client: TestClient):
 # FR-05 car color
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_car_active_when_allocated(client: TestClient):
     snap = _snapshot(client, _cfg(1), _ports([(1, 125, None), (2, 0, None)]))
     c1 = next(c for c in snap["cars"] if c["port_id"] == 1)
@@ -198,7 +192,6 @@ def test_priority_determines_allocation_order(client: TestClient):
     assert any("Car Port 1" in w for w in snap["warnings"])
 
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_priority_higher_number_still_gets_nonzero_when_capacity_allows(client: TestClient):
     # Same config, but both want 125 kW → both fit, priority-order doesn't starve anyone.
     snap = _snapshot(
@@ -215,7 +208,6 @@ def test_priority_higher_number_still_gets_nonzero_when_capacity_allows(client: 
 # FR-09 recompute: same config, different Max Required → different snapshot
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_snapshot_reflects_max_required_change(client: TestClient):
     cfg = _cfg(1)
     snap_a = _snapshot(client, cfg, _ports([(1, 0, None), (2, 0, None)]))
@@ -243,7 +235,6 @@ def test_oversubscribed_emits_warnings(client: TestClient):
 # Session-bound snapshot
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason=_SPRINT1_REASON, strict=True)
 def test_session_snapshot_reflects_stored_state(client: TestClient):
     cfg = _cfg(2)
     r = client.post(

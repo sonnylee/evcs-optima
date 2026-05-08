@@ -196,15 +196,3 @@ def test_full_8_ports_125kw():
         "no bridge should close — local capacity is sufficient"
     )
     _assert_snapshot_invariants(snap, system)
-
-
-def test_invalid_config_3mcu():
-    system = _cfg(3)
-    with pytest.raises(ValueError, match="Sprint 1"):
-        WebSessionEngine(system, _ports([(1, 0, None), (2, 0, None), (3, 0, None), (4, 0, None), (5, 0, None), (6, 0, None)]))
-
-
-def test_invalid_config_nonstd_module_powers():
-    system = _cfg(4, module_powers=[50, 50, 100, 50])
-    with pytest.raises(ValueError, match="Sprint 1"):
-        WebSessionEngine(system, _all_zero_ports(4))
