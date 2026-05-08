@@ -6,11 +6,14 @@ actor loop until borrow/return converges → read steady-state hardware →
 produce a ``VisualSnapshot``. The engine is throwaway and not meant to be
 reused across requests (SPEC-WEB-API §3.2 / §3.3).
 
-Sprint 1 demo scope: **4 MCU × [50, 75, 75, 50]** only. FR-11 (dynamic
-module-power configurations) lands in Sprint 2. Anything outside that
-envelope raises ``ValueError`` with an explicit "Sprint 1" message.
+Sprint 2 step S2.1 unlocks ``rec_bd_count`` (FR-10 first phase) so any
+1..12 MCU layout is now accepted. Per-REC-BD ``module_powers`` is still
+treated as informational only — the simulation core continues to use its
+hardcoded ``[50, 75, 75, 50]`` group layout (FR-11 dynamic powers land in
+S2.2 alongside ``RectifierBoard`` / ``RelayMatrix`` / ``ModuleAssignment``
+shape changes).
 
-Spike-validated state-read points (Sprint 2 must update if these change):
+Spike-validated state-read points (S2.2 must update if these change):
   - ``engine.station.boards[i].output_relays[local_idx]``
   - ``engine.station.boards[i].inter_group_relays[i]``
   - ``engine.station.boards[i].left_bridge_relay``
@@ -52,14 +55,6 @@ from simulation.utils.config_loader import (
 )
 
 
-# Sprint 1 fixed envelope (FR-11 dynamic shape lands in Sprint 2).
-_SPRINT1_REC_BD_COUNT = 4
-_SPRINT1_MODULE_POWERS: List[int] = [50, 75, 75, 50]
-_SPRINT1_ERROR = (
-    "Sprint 1 demo only supports 4 MCU × [50,75,75,50]; "
-    "FR-11 dynamic config arrives in Sprint 2"
-)
-
 # Convergence parameters mirror the Phase 0 spike (`SpikeRunner`).
 _DEFAULT_BATTERY_KWH = 75.0
 _DEFAULT_INITIAL_SOC = 30.0
@@ -87,7 +82,9 @@ def _group_to_pack_range(rec_bd_config: RecBdConfig, group_local_idx: int) -> Tu
 class WebSessionEngine:
     """Rebuild-engine adapter for FR-09 / FR-14.
 
-    Sprint 1 scope: 4 MCU × [50,75,75,50]. FR-11 dynamic powers → Sprint 2.
+    S2.1 scope: any ``rec_bd_count`` ∈ [1, 12]; ``module_powers`` is
+    informational (simulation core still hardcodes [50,75,75,50]).
+    FR-11 dynamic powers land in S2.2.
 
     **Construction patterns**:
 
@@ -124,7 +121,6 @@ class WebSessionEngine:
         cross-MCU borrows (i.e. all-zero or per-port ≤ 125 kW with no
         cross-MCU demand).
         """
-        self._validate_sprint1(system_config)
         self._system_config = system_config
         self._car_ports = list(car_ports)
 
@@ -154,16 +150,6 @@ class WebSessionEngine:
         if any(p.max_required > 0 for p in instance._car_ports):
             await instance._settle_until_stable()
         return instance
-
-    # ── Validation ───────────────────────────────────────────────────────
-
-    @staticmethod
-    def _validate_sprint1(system_config: SystemConfig) -> None:
-        if system_config.rec_bd_count != _SPRINT1_REC_BD_COUNT:
-            raise ValueError(_SPRINT1_ERROR)
-        for bd in system_config.rec_bds:
-            if list(bd.module_powers) != _SPRINT1_MODULE_POWERS:
-                raise ValueError(_SPRINT1_ERROR)
 
     # ── Simulation-config translation ───────────────────────────────────
 
@@ -195,7 +181,7 @@ class WebSessionEngine:
         return SimulationConfig(
             dt=1.0,
             t_end=1e9,
-            num_mcus=_SPRINT1_REC_BD_COUNT,
+            num_mcus=self._system_config.rec_bd_count,
             vehicle_profiles=list(profiles.values()),
             initial_vehicles=placements,
         )
