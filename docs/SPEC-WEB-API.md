@@ -288,9 +288,9 @@ fetch at : "https://www.figma.com/design/KHQ1AFIbh2lBS5m8TSOrv9/EVCS-Vision?node
 
 每次使用者透過按鈕調整任一 Car Port 的 Max Required 後，系統需立即重新計算並更新所有聯動視覺元件，確保介面與計算狀態一致。
 
-1. **語義**:每次 `max_required` 變化後,後端透過 `WebSessionEngine.create(...)`(async factory)建立新的 engine 實例 — 同步配 anchor + 初始 group(≈ 125 kW),然後驅動 actor settle loop 完成 borrow / cross-MCU 演化,最後讀取穩態回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
+1. **語義**:每次 `max_required` 變化後,後端透過 `WebSessionEngine.create(...)`(async factory)建立新的 engine 實例 — 同步配 anchor + 初始 group(達到該 Output 的 SPEC §11 最小保證;default `[50,75,75,50]` 下為 125 kW),然後驅動 actor settle loop 完成 borrow / cross-MCU 演化,最後讀取穩態回傳 `VisualSnapshot`。Engine 是 throwaway,不跨請求保留狀態。
 
-   **實作備註**:Phase 0 Spike 報告 §觀察 1 描述「`SimulationEngine.__init__` 即穩態」並不精確 — `__init__` 僅同步配 anchor + ~125 kW 的初始 group,任何 borrow 或 cross-MCU 演化必須由 actor settle loop 完成。`WebSessionEngine` 將此 settle loop 封裝在 `create()` 中,提供 caller「await 一次即穩態」的語義;sync `__init__` 仍保留作為 anchor-only / 全 0 demand 的 fast path,且不會在 async context 中崩潰(只是 snapshot 反映部分配置)。
+   **實作備註**:Phase 0 Spike 報告 §觀察 1 描述「`SimulationEngine.__init__` 即穩態」並不精確 — `__init__` 僅同步配 anchor + 達 SPEC §11 最小保證(default 配置下 ~125 kW)的初始 group,任何 borrow 或 cross-MCU 演化必須由 actor settle loop 完成。`WebSessionEngine` 將此 settle loop 封裝在 `create()` 中,提供 caller「await 一次即穩態」的語義;sync `__init__` 仍保留作為 anchor-only / 全 0 demand 的 fast path,且不會在 async context 中崩潰(只是 snapshot 反映部分配置)。
 
 2. **延遲**(F09.1.5 實測,4 MCU × [50,75,75,50] 預設配置,AMD EPYC 7763,Python 3.13.5,Linux x86_64,每場景 100 次):
 
@@ -457,7 +457,7 @@ Present 欄與 Target 欄均需支援手動輸入數值，讓使用者能自由�
 2. **後端實作流程**(rebuild + diff + ordered apply):
    - **步驟一**(建 Present 錨點):從 OFF cold-start 出發,用 `present` 值透過 `WebSessionEngine.create()` 建立實例並演化至穩態,讀取其狀態作為 `ControlStepSequence.initial_state`。
    - **步驟二**(建 Target 錨點):從 OFF cold-start 出發(**獨立 engine**),用 `target` 值同樣建立實例並演化至穩態,讀取其狀態作為 final state。
-   - **步驟三**(diff + 排序):比對兩個錨點 state 得出 raw relay 變化集合,依 SPEC §11 的硬體約束(>=125 kW gating、disengage 順序、跨閾值切兩步)排成有序 atomic action sequence。
+   - **步驟三**(diff + 排序):比對兩個錨點 state 得出 raw relay 變化集合,依 SPEC §11 的硬體約束(per-Output 最小保證 gating、disengage 順序、跨閾值切兩步)排成有序 atomic action sequence。
    - **步驟四**(逐個 apply):從 `state_present` 出發逐個套用 atomic action,每套用一個產生中間 `VisualSnapshot`,組成 `steps[i]`。最後一個 snapshot 應等於 `state_target`(若不等則 raise internal error)。
 
    錨點 engine 提供起點與終點 snapshot,中間 N 個 step 的 snapshot 由 step_planner 依 SPEC §11 規則手動演化(`SimulationEngine` 是穩態 solver,不會自動產生中間步驟)。

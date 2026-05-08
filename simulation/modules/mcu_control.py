@@ -21,9 +21,22 @@ from simulation.environment.actor import Actor
 from simulation.hardware.relay import RelayState
 from simulation.modules.vehicle import VehicleState
 
-# SPEC §11: minimum power that must be prepared before the Output relay
-# may close (gate power to the charging gun).
-MIN_START_POWER_KW = 125.0
+# SPEC §11 (docs/SPEC.md L461-467): the minimum power that must be prepared
+# before the Output relay may close is per-output and derived from
+# ``module_powers``. Default ``[50, 75, 75, 50]`` yields 125 kW for both
+# outputs — the legacy hardcoded floor — but non-default configs differ.
+def output_min_guarantee_kw(
+    module_powers: list[int], output_local_idx: int
+) -> float:
+    """SPEC §11 per-output minimum guarantee (kW).
+
+    O0 anchors at G0 → guarantee = module_powers[0] + module_powers[1].
+    O1 anchors at G3 → guarantee = module_powers[3] + module_powers[2].
+    """
+    if output_local_idx == 0:
+        return float(module_powers[0] + module_powers[1])
+    return float(module_powers[3] + module_powers[2])
+
 
 # SPEC §2.2: each REC BD (one per MCU) holds exactly 4 SMR Groups and 2 Outputs.
 # The anchor Groups are the ones physically wired to each Output: G0 for O0,
@@ -58,7 +71,8 @@ class OutputPowerState:
     interval_max: int | None = None
     # 0 = no pending action; 1 = armed (skip this tick); 2 = close on next tick.
     # Two-phase arrival: close the output power-switch relay one step after
-    # the anchor inter-group relay so the 125 kW path is formed first.
+    # the anchor inter-group relay so the SPEC §11 per-Output minimum-
+    # guarantee path is formed first (default config: 125 kW).
     pending_output_relay_close: int = 0
     pending_intergroup_close: int = 0
     # Two-phase departure (SPEC §11): open inter-group relays first, then the
@@ -453,9 +467,11 @@ class MCUControl(Actor, SimulationModule):
             state.pending_intergroup_close = 2
 
         if state.pending_output_relay_close == 2:
-            # SPEC §11: Output relay may close only after ≥125 kW is prepared.
+            # SPEC §11: Output relay may close only after the per-output
+            # minimum guarantee is prepared (default config = 125 kW).
             self._sync_output(i)
-            if self._board.outputs[i].available_power_kw + 1e-9 >= MIN_START_POWER_KW:
+            min_guarantee = output_min_guarantee_kw(self._board.module_powers, i)
+            if self._board.outputs[i].available_power_kw + 1e-9 >= min_guarantee:
                 r = self._board.output_relays[i]
                 if r.state == RelayState.OPEN:
                     r.switch(self._step_index)
@@ -879,8 +895,9 @@ class MCUControl(Actor, SimulationModule):
                 if r in output_relay_set_all and not include_output:
                     continue
                 r.switch(self._step_index)
-        # Close inter-group / bridge relays first so the 125 kW path is
-        # formed before the Output relay closes (SPEC §11, §17).
+        # Close inter-group / bridge relays first so the SPEC §11 per-Output
+        # minimum-guarantee path (default config: 125 kW) is formed before the
+        # Output relay closes (SPEC §11, §17).
         # Sort by relay_id so the close order (and resulting CSV "Relays Ops"
         # column) is deterministic — set iteration order depends on object
         # hash, which varies between Python processes.

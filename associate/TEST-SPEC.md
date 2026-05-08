@@ -674,12 +674,12 @@ mcu.handle_vehicle_arrival(output_local_idx=0)
 → pending_intergroup_close == 0
 → pending_output_relay_close == 1
 
-# Tick T+2：advance_relay_phases()，available >= 125kW
+# Tick T+2：advance_relay_phases()，available >= 該 Output 的 SPEC §11 最小保證（default 配置下 125kW）
 → output relay 閉合（R_O0）
 → pending_output_relay_close == 0
 ```
 
-#### TC-PHASE-02：available < 125kW 時 output relay 不閉合
+#### TC-PHASE-02：available < 該 Output 的 SPEC §11 最小保證時 output relay 不閉合
 
 ```
 # board.outputs[0].available_power_kw = 50.0（人為設定）

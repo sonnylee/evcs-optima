@@ -98,8 +98,9 @@ class WebSessionEngine:
         engine = WebSessionEngine(system, ports)  # no settle
         snap = engine.to_visual_snapshot()
 
-    The sync ``__init__`` only configures anchor + initial 2 groups (~125 kW).
-    Anything requiring cross-MCU borrow or > 125 kW per port must use
+    The sync ``__init__`` only configures anchor + initial 2 groups (the
+    SPEC §11 per-Output minimum guarantee — default config: 125 kW).
+    Anything requiring cross-MCU borrow or demand above that minimum must use
     ``create()``, otherwise the snapshot will reflect partial allocation.
 
     **Async safety**:
@@ -118,8 +119,8 @@ class WebSessionEngine:
 
         Use :meth:`WebSessionEngine.create` (async) for the full settle path.
         Direct ``__init__`` use is reserved for tests that don't need
-        cross-MCU borrows (i.e. all-zero or per-port ≤ 125 kW with no
-        cross-MCU demand).
+        cross-MCU borrows (i.e. all-zero or per-port ≤ that Output's SPEC §11
+        minimum guarantee — default config: 125 kW — with no cross-MCU demand).
         """
         self._system_config = system_config
         self._car_ports = list(car_ports)
@@ -129,7 +130,8 @@ class WebSessionEngine:
             cfg, traffic_simulator=None, scenario_name="web_session"
         )
         # __init__ no longer settles — caller must use create() if demand
-        # > 125 kW or cross-MCU borrow is involved.
+        # exceeds the per-Output SPEC §11 minimum guarantee (default 125 kW)
+        # or cross-MCU borrow is involved.
         self._log_engagement_state()
         
 
@@ -142,9 +144,10 @@ class WebSessionEngine:
         """Async factory — builds the engine and drives the actor settle loop.
 
         This is the canonical entry point for FR-09 and FR-14 paths.
-        Required when any port's ``max_required > 125`` kW or cross-MCU
-        borrow is needed (the sync constructor only completes anchor +
-        initial groups via ``handle_vehicle_arrival``).
+        Required when any port's ``max_required`` exceeds that Output's SPEC
+        §11 minimum guarantee (default config: 125 kW) or cross-MCU borrow is
+        needed (the sync constructor only completes anchor + initial groups
+        via ``handle_vehicle_arrival``).
         """
         instance = cls(system_config, car_ports)
         if any(p.max_required > 0 for p in instance._car_ports):

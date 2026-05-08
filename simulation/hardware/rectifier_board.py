@@ -149,11 +149,21 @@ class RectifierBoard(SimulationModule):
             ),
         ]
 
+    @property
+    def module_powers(self) -> list[int]:
+        """Per-group power (kW), derived from ``group_configs`` (×25 kW SMRs).
+
+        Default ``[50, 75, 75, 50]`` corresponds to ``group_configs = [2, 3, 3, 2]``.
+        Used by SPEC §11 per-output minimum-guarantee logic in ``mcu_control``.
+        """
+        return [gc * 25 for gc in self.group_configs]
+
     def initialize_relays(self, dt_index: int = 0) -> None:
         """Pre-close only inter-group relays on the anchor paths.
 
-        Output relays stay OPEN; they close only after the 125 kW interval
-        is formed when a vehicle arrives (SPEC §11 minimum-guaranteed-power).
+        Output relays stay OPEN; they close only after the SPEC §11 per-Output
+        minimum-guarantee interval is formed when a vehicle arrives (default
+        config: 125 kW).
         """
         # O0 anchor path: close R_01
         # O1 anchor path: close R_23
