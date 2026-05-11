@@ -1,5 +1,3 @@
-// Sprint 1: not currently mounted — ConfigPanel uses ReadOnlyField placeholders.
-// Sprint 2 (FR-10): re-mount this for dynamic REC BD count.
 import { REC_BD_MAX, REC_BD_MIN } from '../../utils/validation';
 
 interface Props {
