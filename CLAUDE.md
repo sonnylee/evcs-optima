@@ -17,6 +17,17 @@ The authoritative specification is `SPEC.md` (Traditional Chinese). Read it firs
 - Web UI: @docs/SPEC-WEB-UI.md
 - Full spec reference: @docs/SPEC.md
 
+## Sprint status (current)
+
+**Sprint 2 complete (as of 2026-05-11)** — FR-10 (`rec_bd_count ∈ [1, 12]`), FR-11 dim B (per-REC-BD `module_powers`), and SPEC §11 dynamic per-Output minimum guarantee are unlocked end-to-end (engine + web service + frontend `ConfigPanel`). Sprint 3 not yet started.
+
+**Baseline** (must hold across any change unless explicitly updated):
+- `services/evcs-api/tests`: **92 passed, 1 xfailed, 2 deselected**
+- `tests/` (simulation/): **241 passed**
+- `web/evcs-ui` `npx tsc --noEmit`: **0 errors**
+
+Central Sprint 2 status + vocabulary canonical: `outputs/SPRINT2_FINAL_STATUS.md`.
+
 ## Setup
 
 ```bash
@@ -82,10 +93,9 @@ G1-R2-G2-R3-G3-R4-G4-R5-G5-R6-G6-R7-G7-R8-G8-R9-G9-R10-G10-R11-G11-R12-G12
 - Each MCU: 4 SMR Groups (50/75/75/50 kW), 2 Outputs (O1↔G1, O2↔G4), Bridge Relays at MCU boundaries
 - **Bridge Relays** (cross-MCU boundary): `R1`, `R5`, `R9` (SPEC §2.2)
 - MCU2 = Local view; MCU1 and MCU3 = neighbors
-- Discrete power levels per MCU: 50 / 125 / 200 / 250 kW
-- Minimum guaranteed power to start charging: 125 kW
-- **Topology rules (SPEC §2.2)**: `N == 1` → single MCU, no Bridge Relay; `N == 2` → linear, one bridge (MCU1↔MCU2); `N >= 3` → ring (head↔tail close the loop)
-- Stage-1 target is the **4-MCU ring** (MCU1↔MCU2↔MCU3↔MCU4↔MCU1); stage-2 scales to 1–12 MCUs (SPEC §2.2)
+- Discrete power levels per MCU: 50 / 125 / 200 / 250 kW (default `[50,75,75,50]` config)
+- Per-Output minimum guaranteed power to close the Output relay: computed by `output_min_guarantee_kw(module_powers, output_idx)` (`simulation/modules/mcu_control.py:24-39`) — SPEC §11 dynamic floor. Default config returns 125 kW for both outputs (the Sprint 1 hardcoded value).
+- **Topology rules (SPEC §2.2)**: `N == 1` → single MCU, no Bridge Relay; `N == 2` → linear, one bridge (MCU1↔MCU2); `N >= 3` → ring (head↔tail close the loop). **Sprint 2 unlocked `N ∈ [1, 12]`** in both engine and web service.
 
 ### Core Data Structures
 
@@ -158,7 +168,7 @@ See `associate/TEST-SPEC.md` for the full test specification (SPEC §19).
 
 ## Web & API Layer (full spec: docs/SPEC-WEB-API.md; UI spec: docs/SPEC-WEB-UI.md)
 
-Three-tier architecture wrapping the existing Python simulation core. `services/evcs-api/` exists (Phases 1–2 complete; Phase 3 has been redefined as a **rebuild-engine snapshot strategy** — see "Phase 3 strategy" below). `web/evcs-ui/` has not been created yet — Phase 4 follows SPEC-WEB-UI.md and the layout below.
+Three-tier architecture wrapping the existing Python simulation core. All four phases are now complete: `services/evcs-api/` is built on the **rebuild-engine snapshot strategy** (see "Phase 3 strategy" below); `web/evcs-ui/` Phase 4 is shipped (single-page Bun/React tool with edit / player modes). Sprint 2 also unlocked FR-10 + FR-11 dim B end-to-end (see Sprint status section near top).
 
 1. **Bun Web UI** (`web/evcs-ui/`, React + TypeScript) — MCU topology view, config panel, Car Port input panel, step player. Entry points: `src/api/evcsApiClient.ts`, `src/stores/evcsStore.ts`, `src/components/{topology, config-panel, car-port-panel, step-player}/`.
 2. **FastAPI Service** (`services/evcs-api/`) — REST facade + validation + session store + core adapter. Routes under `app/api/v1/`: `health`, `constants`, `sessions`, `validation`, `snapshot`, `control_steps`. Pydantic schemas in `app/schemas/`; core integration in `app/adapters/evcs_core_adapter.py`.
@@ -194,7 +204,7 @@ Three-tier architecture wrapping the existing Python simulation core. `services/
 - **Visual consistency**: because both paths share the same algorithm, the FR-09 edit-mode snapshot for a given demand matches the FR-14 player-mode snapshot at the corresponding step.
 - **Priority (FR-16)** is fed into `WebSessionEngine`'s placement order, replacing the default top-down Car-ID allocation.
 - **Deleted**: `allocate_packs`, `_search_order`, `_neighbor_rec_bds`, `_home_order`, `_port_sort_key`, `_build_output_relays`, `_build_inter_group_relays`, `_build_bridge_relays` in `state_calculation_service.py`, plus `engine_cache` in `session_service.py`. `grep -r "allocate_packs"` under `services/evcs-api/` should return nothing.
-- **FR-11 scope split**: 5/15 demo locks to the default `[50, 75, 75, 50] × 4 MCU` config; full FR-11 (dynamic `RelayMatrix` / `ModuleAssignment` shapes, dynamic `GROUPS_PER_MCU`) is deferred to Sprint 2 (5/16–6/15).
+- **FR-11 scope split (Sprint 2 end state)**: Sprint 1 (5/15 demo) locked to `[50,75,75,50] × 4 MCU`. **Sprint 2 unlocked dim B**: `rec_bd_count ∈ [1, 12]` and per-REC-BD `module_powers` flow through `WebSessionEngine` → `SimulationEngine` → `RectifierBoard`; SPEC §11 floor moved to dynamic `output_min_guarantee_kw(module_powers, output_idx)`. **Sprint 3 (not started) will unlock dim A**: dynamic `GROUPS_PER_MCU` + `RelayMatrix` / `ModuleAssignment` shape changes (see `outputs/S2_0_DYNAMIC_GROUPS_ASSESSMENT.md`).
 
 ### Web UI layer (Phase 4 — full spec: docs/SPEC-WEB-UI.md)
 

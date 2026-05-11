@@ -690,12 +690,13 @@ engine 物件被 garbage collected
 | **刪除** `allocate_packs` 與所有 greedy 演算法 helper:`_search_order` / `_neighbor_rec_bds` / `_home_order` / `_port_sort_key` / `_build_output_relays` / `_build_inter_group_relays` / `_build_bridge_relays` | — | `services/evcs-api/app/services/state_calculation_service.py` |
 | 更新 `SessionStore`:移除原計劃中的 `engine_cache`(不再需要,每次 rebuild)| FR-09 | `services/evcs-api/app/services/session_service.py` |
 
-**FR-11(MCUControl 拔硬編碼)分階段處理**:
+**FR-11(MCUControl 拔硬編碼)分階段處理 — Sprint 2 收尾後狀態**:
 
-- **5/15 demo 階段不做完整 FR-11**,demo 只支援預設配置 `[50,75,75,50] × 4 MCU`
-- **5/16~6/15 Sprint 2 補完 FR-11**:動態化 `RelayMatrix` / `ModuleAssignment` shape、動態化 `GROUPS_PER_MCU`,使 web service 能處理任意 module power 配置
+- **Sprint 1(5/15 demo,歷史)**:鎖定預設配置 `[50,75,75,50] × 4 MCU`
+- **Sprint 2(已完成)**:dim B 解鎖 — `rec_bd_count ∈ [1, 12]` 任意拓樸 + 每 REC BD 獨立 `module_powers`;SPEC §11 floor 改由 `simulation/modules/mcu_control.py::output_min_guarantee_kw(module_powers, output_idx)` 動態計算(default `[50,75,75,50]` 下回傳 125 kW,byte-identical)
+- **Sprint 3(待啟動)**:dim A — `GROUPS_PER_MCU` 動態化 / `RelayMatrix` / `ModuleAssignment` shape 動態化。詳見 `outputs/S2_0_DYNAMIC_GROUPS_ASSESSMENT.md`
 
-> 本 Phase 文件保留 FR-11 工作項,但執行時程切到 Sprint 2。
+> 本 Phase 文件保留 FR-11 工作項細節作為歷史紀錄;實際進度見 `outputs/SPRINT2_FINAL_STATUS.md`。
 
 ---
 
