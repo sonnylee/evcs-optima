@@ -608,3 +608,66 @@ def test_route_apply_then_full_player_walkthrough(client: TestClient):
     # back from 0 → wraps to total
     rb = client.post(f"/api/v1/sessions/{sid}/step", params={"direction": "back"})
     assert rb.json()["current_step_index"] == total
+
+
+def test_dual_port_per_bd_stitched_final_matches_engine_final():
+    """Regression: when two ports home the same REC BD (Port 1 + Port 2 → BD1),
+    the last stitched ControlStep snapshot must match the WebSessionEngine
+    final_state exactly. Previously _adjacent_pack_owners mis-attributed every
+    BD1 inter_group flip to the lowest port_id (via min(owners)) because the
+    inter_group branch never filtered by group index, leaving Port 2's gating
+    set empty in _resolve_pack_owner and stranding BD1 G2 packs at owner=None
+    — surfacing as Car 2 = 50 kW and BD1 used = 7/10 in the player.
+    """
+    from app.services.web_session_engine import WebSessionEngine
+
+    sys = _system(4)
+    ports = _ports_full(
+        4,
+        {
+            1: {"max_required": 300, "present": 40, "target": 300, "priority": 3},
+            2: {"max_required": 200, "present": 50, "target": 200, "priority": 2},
+            3: {"max_required": 100, "present": 60, "target": 100, "priority": 1},
+        },
+    )
+
+    async def _go():
+        present_ports = [cp.model_copy(update={"max_required": cp.present}) for cp in ports]
+        target_ports = [cp.model_copy(update={"max_required": cp.target}) for cp in ports]
+        initial_engine = await WebSessionEngine.create(sys, present_ports)
+        final_engine = await WebSessionEngine.create(sys, target_ports)
+        return initial_engine.to_visual_snapshot(), final_engine.to_visual_snapshot()
+
+    initial_state, final_state = asyncio.run(_go())
+    steps = step_planner.plan_transition(sys, ports, initial_state, final_state)
+    assert len(steps) > 0, "expected control steps for present->target transition"
+
+    last = steps[-1].snapshot
+
+    # 1. Per-pack ownership in the last stitched step must equal final_state.
+    final_packs = {(p.rec_bd_id, p.pack_index): p.owner_port_id for p in final_state.packs}
+    last_packs = {(p.rec_bd_id, p.pack_index): p.owner_port_id for p in last.packs}
+    assert last_packs == final_packs, (
+        f"last-step pack ownership diverges from final_state; "
+        f"missing/wrong = {[k for k in final_packs if last_packs.get(k) != final_packs[k]]}"
+    )
+
+    # 2. Per-car allocation in the last step matches final_state for active ports.
+    final_cars = {c.port_id: c.allocated_kw for c in final_state.cars}
+    for c in last.cars:
+        if c.port_id in (1, 2, 3):
+            assert c.allocated_kw == final_cars[c.port_id], (
+                f"Port {c.port_id} last-step alloc {c.allocated_kw} != "
+                f"final_state alloc {final_cars[c.port_id]}"
+            )
+
+    # 3. Port 2 floor — guards against the 50 kW regression symptom.
+    car2 = next(c for c in last.cars if c.port_id == 2)
+    assert car2.allocated_kw >= 125, (
+        f"Port 2 should retain ≥ 125 kW (anchor G3 + G2); got {car2.allocated_kw}"
+    )
+
+    # 4. At least one step description must attribute to Port 2 (M1.R4 expansion).
+    assert any("Port 2" in s.description for s in steps), (
+        f"no step attributed to Port 2; descriptions = {[s.description for s in steps]}"
+    )

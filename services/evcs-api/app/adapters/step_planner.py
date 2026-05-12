@@ -166,6 +166,7 @@ def _attribute_flip(
     initial: VisualSnapshot,
     final: VisualSnapshot,
     ports_by_id: Dict[int, CarPortInput],
+    system: SystemConfig,
 ) -> int:
     """Decide which port_id this flip is attributed to.
 
@@ -180,8 +181,8 @@ def _attribute_flip(
         return post.owner_port_id or 0
 
     closing = post.state == "Closed"
-    candidates_final = _adjacent_pack_owners(post, final)
-    candidates_initial = _adjacent_pack_owners(pre, initial)
+    candidates_final = _adjacent_pack_owners(post, final, system)
+    candidates_initial = _adjacent_pack_owners(pre, initial, system)
 
     if closing:
         # In final, this relay is closed because some port spans both sides.
@@ -201,7 +202,7 @@ def _attribute_flip(
 
 
 def _adjacent_pack_owners(
-    relay: RelaySnapshot, snap: VisualSnapshot
+    relay: RelaySnapshot, snap: VisualSnapshot, system: SystemConfig,
 ) -> List[int]:
     """Owners of packs immediately adjacent to a non-output relay."""
     if relay.kind == "inter_group":
@@ -217,8 +218,9 @@ def _adjacent_pack_owners(
         for p in snap.packs:
             if p.rec_bd_id != bd_id or p.owner_port_id is None:
                 continue
-            # Find the group index for this pack
-            # (rough: rely on ordering — pack_index sorted)
+            g = _pack_to_group(system, p.rec_bd_id, p.pack_index)
+            if g != left_g and g != right_g:
+                continue
             owners.append(p.owner_port_id)
         # Dedup, preserve order
         return list(dict.fromkeys(owners))
@@ -598,7 +600,7 @@ def plan_transition(
     raw_diffs = _relay_diff(initial_state, final_state)
     flips: List[_RelayFlip] = []
     for ir, fr in raw_diffs:
-        port = _attribute_flip(ir, fr, initial_state, final_state, ports_by_id)
+        port = _attribute_flip(ir, fr, initial_state, final_state, ports_by_id, system)
         flips.append(
             _RelayFlip(
                 relay_id=fr.id,
