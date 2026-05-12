@@ -1,0 +1,13 @@
+[run]
+source =
+    services/evcs-api/app
+omit =
+    */tests/*
+    */conftest.py
+    */__init__.py
+    simulation/*
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 1
