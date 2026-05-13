@@ -255,19 +255,25 @@ def test_priority_drives_arrival_order():
 
 
 def test_unreasonable_present_warns_does_not_abort():
-    """FR-14: present > max_required emits warning but sequence still generated."""
-    sys = _system(4)
+    """FR-14: total Present exceeds station capacity → warning but sequence still generated.
+
+    SPEC §FR-14 line 490 ("Present 為不合理總值") maps to the total-overflow
+    case, not per-port ``present > max_required`` (the latter is stale under
+    FR-14's UI flow, which doesn't edit ``max_required``).
+    """
+    sys = _system(4)  # capacity = 4 × 250 kW = 1000 kW
+    # sum(present) = 600 + 600 = 1200 kW > 1000 kW; priorities 1 and 2 set.
     ports = _ports_full(
         4,
         {
-            1: {"max_required": 125, "present": 200, "target": 125},
-            2: {"max_required": 0, "present": 0, "target": 0, "priority": 2},
+            1: {"max_required": 600, "present": 600, "target": 600, "priority": 1},
+            2: {"max_required": 600, "present": 600, "target": 600, "priority": 2},
         },
     )
     seq = asyncio.run(generate_control_steps(sys, ports))
     assert any(
-        "Present" in w and "exceeds Max Required" in w for w in seq.warnings
-    )
+        "Sum of Present" in w and "exceeds" in w for w in seq.warnings
+    ), f"expected capacity-overflow warning; got {seq.warnings}"
 
 
 def test_ring_wrap_borrow_4_rec_bds():

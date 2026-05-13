@@ -45,23 +45,22 @@ class PrioritiesIncompleteError(AdapterError):
 async def _present_warnings(
     system: SystemConfig, car_ports: List[CarPortInput]
 ) -> List[str]:
-    """FR-14: warn if user-entered Present is unreasonable.
+    """FR-14: warn if user-entered Present is unreasonable (SPEC §FR-14 line 490).
 
     Detected cases:
-    * ``present > max_required`` — present exceeds the per-port ceiling.
-    * Sum of ``present`` exceeds station capacity (resources unavailable).
+    * Sum of ``present`` exceeds station capacity (total demand unreasonable).
     * The recomputed allocation under ``present`` does not match the
       user-entered ``present`` (i.e. station can't actually deliver this).
+
+    Per-port ``present > max_required`` is NOT checked: FR-14 UI does not
+    set ``max_required`` (Fr14ControlTable edits priority/present/target
+    only) and ``generate_control_steps`` dynamically overrides
+    ``max_required`` with ``present``/``target`` for engine input — leaving
+    raw ``max_required`` stale at 0 and any per-port comparison a false
+    positive against legitimate FR-14 inputs.
     """
 
     warnings: List[str] = []
-
-    for cp in car_ports:
-        if cp.present > cp.max_required:
-            warnings.append(
-                f"Port {cp.port_id}: Present ({cp.present} kW) exceeds Max Required "
-                f"({cp.max_required} kW); suggested {cp.max_required} kW."
-            )
 
     total_present = sum(cp.present for cp in car_ports)
     if total_present > system.total_capacity_kw:
