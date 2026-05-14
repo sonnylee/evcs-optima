@@ -1,7 +1,7 @@
 # Step Z.2 Phase 3 Report — Demo Scenario 2 Visual Validation + Baseline
 
 > 執行時間:2026-05-14 07:55 UTC
-> Phase 3 commit:**待此報告 commit 後填**(follow-up commit 模式)
+> Phase 3 commit:`6bd1c7e`
 > 基於 Phase 2 commit `50238be`(主)+ `bbbc123`(hash 回填)
 
 ## 1. Demo 場景 2 真實跑出結果
