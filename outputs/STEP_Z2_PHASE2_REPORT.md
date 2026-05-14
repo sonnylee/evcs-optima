@@ -1,7 +1,7 @@
 # Step Z.2 Phase 2 Report — Test Suite Alignment
 
 > 執行時間:2026-05-14 07:45 UTC
-> Phase 2 commit:**待此報告 commit 後填**
+> Phase 2 commit:`50238be`
 > 基於 Phase 1 commit `399cc47`(原始)/ `6c93cff`(amend)
 
 ## 1. Test 結果總覽
