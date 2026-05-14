@@ -1,30 +1,28 @@
-"""Rebuild + diff control-step planner (Phase 3, Step F14.1 — FR-14 / FR-15).
+"""Progressive-demand control-step planner (Z.2 — FR-14 / FR-15).
 
-The caller (``evcs_core_adapter.generate_control_steps``) supplies two
-already-converged ``VisualSnapshot`` instances — ``initial_state`` (built with
-``max_required = present``) and ``final_state`` (built with ``max_required =
-target``). This module's job is purely combinatorial: enumerate the relays
-whose state differs between the two snapshots, schedule those flips into a
-SPEC §11-compliant order, and emit one ``ControlStep`` per atomic flip with
-an interpolated mid-state snapshot.
+Replaces the legacy rebuild + diff + SPEC §11-sort algorithm. SPEC §11
+ordering is now produced entirely by ``mcu_control`` (every intermediate
+snapshot is a settled mcu_control steady state by construction). This module
+walks ``max_required`` from ``present`` to ``target`` in ``STEP_KW`` (25 kW)
+increments, asks ``WebSessionEngine.create()`` for each step's snapshot, then
+collapses consecutive snapshots whose relay + pack state is identical.
 
-Algorithm (5 steps):
+Algorithm (4 steps):
 
-1. **Per-port classification** — arrivals / departures / increases /
-   decreases / no_change.
-2. **Relay diff** — pair ``initial.relays`` with ``final.relays`` by id; keep
-   only those with different ``state``.
-3. **Phase sort (cross-port)** — Phase A: full departures (priority asc);
-   Phase B: partial decreases (priority desc — low priority releases first);
-   Phase C: arrivals + increases (priority asc).
-4. **SPEC §11 sort (within-port)** — inter-group / bridge before output on
-   arrival; inter-group / bridge before output on departure; release-side
-   walks high→low, engage-side walks low→high.
-5. **Snapshot stitching** — accumulate applied flips and reconstruct each
-   intermediate snapshot by blending ``initial_state`` and ``final_state``
-   field-by-field.
+1. **Progressive demand series** — for step ``i``, each port's
+   ``max_required`` = ``present + sign * i * STEP_KW`` (clamped to
+   ``[min(present, target), max(present, target)]``).
+2. **Per-step settle** — call ``WebSessionEngine.create(system, ports_i)`` and
+   capture ``to_visual_snapshot()``.
+3. **Dedup** — drop snapshots whose ``(relay_state, pack_owner)`` tuple is
+   identical to the previous kept snapshot.
+4. **Adjacent diff + describe** — for each kept pair ``(prev, curr)``, emit
+   one ``ControlStep`` per relay whose state changed, using ``_describe`` and
+   the per-step snapshot ``curr`` directly (no stitching — every snapshot is
+   already a mcu_control-settled steady state).
 
-References: ``docs/SPEC-WEB-API.md`` §3.3, ``docs/SPEC.md`` §11.
+References: ``docs/SPEC-WEB-API.md`` §3.3, ``docs/SPEC.md`` §11,
+``outputs/SPIKE_E_REPORT.md`` (validation), ``outputs/STEP_Z1_REPORT.md``.
 """
 from __future__ import annotations
 
@@ -235,128 +233,88 @@ def _adjacent_pack_owners(
 
 
 # ---------------------------------------------------------------------------
-# Step 3 + 4 — Schedule the flips
+# Progressive demand sequence (Z.2 — replaces SPEC §11 sort)
 # ---------------------------------------------------------------------------
 
-def _schedule_flips(
-    flips: List[_RelayFlip],
-    car_ports: List[CarPortInput],
-) -> List[_RelayFlip]:
-    """Phase A → B → C, with SPEC §11 ordering inside each port's subset."""
-    ports_by_id = {p.port_id: p for p in car_ports}
+_MAX_PROGRESSIVE_STEPS = 40  # safety bound; scenario 2 expects ~8-15
 
-    departures = [p for p in car_ports if _phase_of(p) == _Phase.DEPARTURE]
-    decreases = [p for p in car_ports if _phase_of(p) == _Phase.DECREASE]
-    arrivals = [p for p in car_ports if _phase_of(p) == _Phase.ARRIVAL]
-    increases = [p for p in car_ports if _phase_of(p) == _Phase.INCREASE]
 
-    departures.sort(key=lambda p: (_prio_key(p), p.port_id))
-    decreases.sort(key=lambda p: (-_prio_key(p), p.port_id))
-    arrivals.sort(key=lambda p: (_prio_key(p), p.port_id))
-    increases.sort(key=lambda p: (_prio_key(p), p.port_id))
-
-    flips_by_port: Dict[int, List[_RelayFlip]] = {}
-    for f in flips:
-        flips_by_port.setdefault(f.port, []).append(f)
-
-    result: List[_RelayFlip] = []
-    seen_port_phases: Set[Tuple[int, str]] = set()
-
-    def _emit_port(port: CarPortInput, phase: str) -> None:
-        key = (port.port_id, phase)
-        if key in seen_port_phases:
-            return
-        seen_port_phases.add(key)
-        sub = flips_by_port.get(port.port_id, [])
-        result.extend(_order_within_port(sub, phase))
-
-    # Phase A — departures
-    for p in departures:
-        _emit_port(p, _Phase.DEPARTURE)
-    # Phase B — decreases
-    for p in decreases:
-        _emit_port(p, _Phase.DECREASE)
-    # Phase C — arrivals + increases (priority asc, mixed)
-    pc = sorted(arrivals + increases, key=lambda p: (_prio_key(p), p.port_id))
-    for p in pc:
-        phase = _phase_of(p)
-        _emit_port(p, phase)
-
-    # Catch-all: any unattributed flips (port=0) go at the end, sorted by id
-    leftovers = sorted(
-        [f for f in flips if f.port == 0 and f not in result],
-        key=lambda f: f.relay_id,
-    )
-    result.extend(leftovers)
+def _progressive_demand(
+    initial: List[CarPortInput], step_index: int
+) -> List[CarPortInput]:
+    """Per-port ``max_required`` advanced from ``present`` toward ``target`` by
+    ``step_index * STEP_KW`` (clamped to the present↔target range).
+    """
+    result: List[CarPortInput] = []
+    for cp in initial:
+        delta = step_index * STEP_KW
+        if cp.target > cp.present:
+            direction = 1
+        elif cp.target < cp.present:
+            direction = -1
+        else:
+            direction = 0
+        candidate = cp.present + direction * delta
+        lo = min(cp.present, cp.target)
+        hi = max(cp.present, cp.target)
+        new_max = max(lo, min(hi, candidate))
+        result.append(cp.model_copy(update={"max_required": new_max}))
     return result
 
 
-def _order_within_port(flips: List[_RelayFlip], phase: str) -> List[_RelayFlip]:
-    """SPEC §11 order: inter-group / bridge before output on engage and disengage.
+def _target_reached(ports: List[CarPortInput]) -> bool:
+    return all(cp.max_required == cp.target for cp in ports)
 
-    Within inter-group / bridge:
-      - Engage (close): walk anchor-outward (= rec_bd_id asc, relay_id asc)
-      - Disengage (open): walk outward-inward (= rec_bd_id desc, relay_id desc)
+
+async def _generate_progressive_snapshots(
+    system: SystemConfig,
+    car_ports: List[CarPortInput],
+) -> List[Tuple[List[CarPortInput], VisualSnapshot]]:
+    """Walk demand from present→target in STEP_KW increments; capture each
+    settled snapshot. SPEC §11 ordering is enforced by mcu_control inside
+    each ``WebSessionEngine.create()`` call.
     """
-    if not flips:
+    from app.services.web_session_engine import WebSessionEngine
+
+    snapshots: List[Tuple[List[CarPortInput], VisualSnapshot]] = []
+    step = 0
+    while True:
+        ports_at_step = _progressive_demand(car_ports, step)
+        engine = await WebSessionEngine.create(system, ports_at_step)
+        snap = engine.to_visual_snapshot()
+        snapshots.append((ports_at_step, snap))
+        if _target_reached(ports_at_step):
+            break
+        step += 1
+        if step > _MAX_PROGRESSIVE_STEPS:
+            break
+    return snapshots
+
+
+def _dedup_snapshots(
+    snapshots: List[Tuple[List[CarPortInput], VisualSnapshot]],
+) -> List[Tuple[List[CarPortInput], VisualSnapshot]]:
+    """Drop consecutive snapshots whose ``(relay_state, pack_owner)`` tuple
+    matches the previous kept snapshot. Preserves the first occurrence.
+    """
+    if not snapshots:
         return []
-    output_flips = [f for f in flips if f.kind == "output"]
-    other = [f for f in flips if f.kind != "output"]
 
-    if phase in (_Phase.ARRIVAL, _Phase.INCREASE):
-        # Engage: bridges/inter-group first (low → high), then output
-        other_sorted = sorted(other, key=_engage_key)
-        return other_sorted + output_flips
-    if phase in (_Phase.DEPARTURE, _Phase.DECREASE):
-        # Disengage: bridges/inter-group first (high → low), then output
-        other_sorted = sorted(other, key=_disengage_key)
-        return other_sorted + output_flips
-    return flips
+    def _key(snap: VisualSnapshot) -> tuple:
+        relays = tuple(sorted((r.id, r.state) for r in snap.relays))
+        packs = tuple(
+            sorted((p.rec_bd_id, p.pack_index, p.owner_port_id) for p in snap.packs)
+        )
+        return (relays, packs)
 
-
-def _engage_key(f: _RelayFlip) -> Tuple[int, int, str]:
-    # Inner-out from anchor: prefer same REC BD inter-group ascending; bridges last
-    kind_order = {"inter_group": 0, "bridge": 1}
-    bd = f.rec_bd_id if f.rec_bd_id is not None else 99
-    return (kind_order.get(f.kind, 2), bd, f.relay_id)
-
-
-def _disengage_key(f: _RelayFlip) -> Tuple[int, int, str]:
-    # Outer-in to anchor: bridges first, then inter-group descending
-    kind_order = {"bridge": 0, "inter_group": 1}
-    bd = -f.rec_bd_id if f.rec_bd_id is not None else 99
-    return (kind_order.get(f.kind, 2), bd, _negate_relay_id(f.relay_id))
-
-
-def _negate_relay_id(rid: str) -> str:
-    """Reverse-sort helper — turn 'M1.R3' into a string that sorts before 'M1.R2'."""
-    return "".join(chr(255 - ord(c)) for c in rid)
-
-
-# ---------------------------------------------------------------------------
-# Phase ordering (compat helper)
-# ---------------------------------------------------------------------------
-
-def _build_schedule(car_ports: List[CarPortInput]) -> List[Tuple[int, int]]:
-    """Return ``(port_id, 0)`` tuples in Phase A → B → C order.
-
-    Kept as a small introspection helper (and consumed by
-    ``test_schedule_phase_ordering``) — the rebuild + diff strategy no
-    longer walks ticks per 25 kW.
-    """
-    departures = sorted(
-        [p for p in car_ports if _phase_of(p) == _Phase.DEPARTURE],
-        key=lambda p: (_prio_key(p), p.port_id),
-    )
-    decreases = sorted(
-        [p for p in car_ports if _phase_of(p) == _Phase.DECREASE],
-        key=lambda p: (-_prio_key(p), p.port_id),
-    )
-    arrivals_increases = sorted(
-        [p for p in car_ports if _phase_of(p) in (_Phase.ARRIVAL, _Phase.INCREASE)],
-        key=lambda p: (_prio_key(p), p.port_id),
-    )
-    return [(p.port_id, 0) for p in (departures + decreases + arrivals_increases)]
+    deduped = [snapshots[0]]
+    prev_key = _key(snapshots[0][1])
+    for ports, snap in snapshots[1:]:
+        key = _key(snap)
+        if key != prev_key:
+            deduped.append((ports, snap))
+            prev_key = key
+    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -585,24 +543,37 @@ def _describe(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def plan_transition(
+async def plan_transition(
     system: SystemConfig,
     car_ports: List[CarPortInput],
     initial_state: VisualSnapshot,
     final_state: VisualSnapshot,
 ) -> List[ControlStep]:
-    """Diff ``initial_state`` and ``final_state`` and emit one
-    ``ControlStep`` per atomic relay flip, in SPEC §11 order.
-    """
-    ports_by_id = {p.port_id: p for p in car_ports}
+    """Walk present→target via progressive ``max_required``, emit one
+    ``ControlStep`` per relay state change observed between consecutive
+    mcu_control-settled snapshots.
 
-    # 1+2 — Diff and attribute
-    raw_diffs = _relay_diff(initial_state, final_state)
-    flips: List[_RelayFlip] = []
-    for ir, fr in raw_diffs:
-        port = _attribute_flip(ir, fr, initial_state, final_state, ports_by_id, system)
-        flips.append(
-            _RelayFlip(
+    ``initial_state`` / ``final_state`` are accepted for backwards-compatible
+    signature but are not consulted directly — every snapshot in the emitted
+    sequence is produced by ``WebSessionEngine.create()`` so SPEC §11 ordering
+    comes for free from mcu_control.
+    """
+    raw = await _generate_progressive_snapshots(system, car_ports)
+    deduped = _dedup_snapshots(raw)
+    if len(deduped) < 2:
+        return []
+
+    ports_by_id = {p.port_id: p for p in car_ports}
+    steps: List[ControlStep] = []
+
+    for i in range(1, len(deduped)):
+        prev_snap = deduped[i - 1][1]
+        curr_snap = deduped[i][1]
+        for ir, fr in _relay_diff(prev_snap, curr_snap):
+            port = _attribute_flip(
+                ir, fr, prev_snap, curr_snap, ports_by_id, system
+            )
+            flip = _RelayFlip(
                 relay_id=fr.id,
                 from_state=ir.state,
                 to_state=fr.state,
@@ -611,25 +582,14 @@ def plan_transition(
                 rec_bd_id=fr.rec_bd_id,
                 port=port,
             )
-        )
-
-    # 3+4 — Schedule
-    ordered = _schedule_flips(flips, car_ports)
-
-    # 5 — Stitch + emit
-    applied: Set[str] = set()
-    steps: List[ControlStep] = []
-    for f in ordered:
-        applied.add(f.relay_id)
-        snap = _stitch_snapshot(
-            system, car_ports, initial_state, final_state, applied, ordered
-        )
-        port_phase = _Phase.NO_CHANGE
-        if f.port in ports_by_id:
-            port_phase = _phase_of(ports_by_id[f.port])
-        desc = _describe(f, snap, port_phase)
-        steps.append(
-            ControlStep(step_index=len(steps), description=desc, snapshot=snap)
-        )
+            port_phase = _Phase.NO_CHANGE
+            if port in ports_by_id:
+                port_phase = _phase_of(ports_by_id[port])
+            desc = _describe(flip, curr_snap, port_phase)
+            steps.append(
+                ControlStep(
+                    step_index=len(steps), description=desc, snapshot=curr_snap
+                )
+            )
 
     return steps

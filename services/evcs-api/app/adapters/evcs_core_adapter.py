@@ -141,8 +141,8 @@ async def generate_control_steps(
             warnings=warnings + ["No change required"],
         )
 
-    # 5. Plan the transition (rebuild + diff — F14.1)
-    steps = step_planner.plan_transition(
+    # 5. Plan the transition (Z.2 — progressive demand model)
+    steps = await step_planner.plan_transition(
         system_config, car_ports, initial_state, final_state
     )
 
