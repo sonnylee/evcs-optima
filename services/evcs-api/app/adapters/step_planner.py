@@ -569,10 +569,23 @@ async def plan_transition(
     for i in range(1, len(deduped)):
         prev_snap = deduped[i - 1][1]
         curr_snap = deduped[i][1]
+
+        # Attribute every diff to its owning port, then sort by that port's
+        # priority so FR-16 ordering survives when multiple ports change at
+        # the same demand level (otherwise relays are emitted in mcu_idx /
+        # lexical order regardless of priority).
+        attributed: List[Tuple[int, str, RelaySnapshot, RelaySnapshot, int]] = []
         for ir, fr in _relay_diff(prev_snap, curr_snap):
             port = _attribute_flip(
                 ir, fr, prev_snap, curr_snap, ports_by_id, system
             )
+            prio = (
+                _prio_key(ports_by_id[port]) if port in ports_by_id else 10**9
+            )
+            attributed.append((prio, fr.id, ir, fr, port))
+        attributed.sort(key=lambda x: (x[0], x[1]))
+
+        for _, _, ir, fr, port in attributed:
             flip = _RelayFlip(
                 relay_id=fr.id,
                 from_state=ir.state,
