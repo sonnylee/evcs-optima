@@ -19,10 +19,10 @@ function GroupBlock({ groupIndex, powerKw, packs }: GroupBlockProps) {
   const inUse = packs.some((p) => p.in_use);
   return (
     <div
-      className={`flex flex-col items-center justify-center rounded border text-[11px] font-mono px-2 ${
+      className={`flex-1 flex flex-col items-center justify-center rounded border text-[11px] font-mono px-2 ${
         inUse ? 'border-slate-500 text-white' : 'border-slate-300 text-slate-600'
       }`}
-      style={{ backgroundColor: ownerColor, flex: powerKw }}
+      style={{ backgroundColor: ownerColor }}
       title={`Group ${groupIndex + 1} • ${powerKw}kW (${packs.length} packs)`}
     >
       <span className="font-semibold leading-none">{powerKw}kW</span>
@@ -86,7 +86,7 @@ function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdR
           the two car rows' combined centroid. Column height stays REC_BD_HEIGHT. */}
       <div className="flex flex-col justify-center w-24" style={{ height: REC_BD_HEIGHT }}>
         {groups.map((g, idx) => (
-          <div key={g.index} className="flex flex-col" style={{ height: g.powerKw * 0.42 }}>
+          <div key={g.index} className="flex flex-col" style={{ height: Math.max(28, g.powerKw * 0.42) }}>
             <div className="flex-1 flex">
               <GroupBlock groupIndex={g.index} powerKw={g.powerKw} packs={g.packs} />
             </div>
@@ -116,9 +116,9 @@ function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdR
               className="flex items-center gap-2"
               style={{ height: CAR_ROW_HEIGHT }}
             >
-              <span className="w-8 border-t border-dashed border-slate-300" />
+              <span className="w-10 border-t border-dashed border-slate-300" />
               {out && <RelayIcon relay={out} />}
-              <span className="w-8 border-t border-dashed border-slate-300" />
+              <span className="w-10 border-t border-dashed border-slate-300" />
               <CarIcon car={car} />
             </div>
           );
