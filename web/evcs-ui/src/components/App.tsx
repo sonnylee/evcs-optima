@@ -39,7 +39,7 @@ export function App() {
       )}
 
       {mode === 'edit' ? (
-        <main className="grid grid-cols-[minmax(420px,1.1fr)_minmax(720px,2fr)] gap-4 p-4">
+        <main className="grid grid-cols-[minmax(420px,1.1fr)_minmax(620px,1.6fr)] gap-4 p-4">
           <section className="overflow-auto">
             <TopologyView />
           </section>
