@@ -20,7 +20,7 @@ export function MainPanel() {
   }
 
   return (
-    <div className="grid grid-cols-2 gap-4 h-full mx-auto w-full max-w-[760px] pt-3">
+    <div className="grid grid-cols-[minmax(460px,1fr)_minmax(320px,0.85fr)] gap-4 h-full pt-3">
       {/* Middle column — white background, FR-07/09 ±25 controls */}
       <div className="bg-white border border-slate-200 rounded-md flex flex-col">
         {carPorts.map((port, i) => {
