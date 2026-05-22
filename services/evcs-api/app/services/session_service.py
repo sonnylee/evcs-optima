@@ -1,7 +1,6 @@
 """In-memory session store (FR-09 recompute, FR-14 generate, FR-15 player).
 
-Replaced by TinyDB / persistent store later; the interface below is what
-routes & tests rely on, so swapping the backend is a one-file change.
+The interface routes & tests rely on; backend swap (e.g. TinyDB) is one file.
 """
 from __future__ import annotations
 

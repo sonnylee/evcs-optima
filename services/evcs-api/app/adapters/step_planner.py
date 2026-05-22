@@ -1,28 +1,13 @@
 """Progressive-demand control-step planner (Z.2 — FR-14 / FR-15).
 
-Replaces the legacy rebuild + diff + SPEC §11-sort algorithm. SPEC §11
-ordering is now produced entirely by ``mcu_control`` (every intermediate
-snapshot is a settled mcu_control steady state by construction). This module
-walks ``max_required`` from ``present`` to ``target`` in ``STEP_KW`` (25 kW)
-increments, asks ``WebSessionEngine.create()`` for each step's snapshot, then
-collapses consecutive snapshots whose relay + pack state is identical.
+SPEC §11 ordering comes entirely from ``mcu_control``: every snapshot is a
+settled steady state. The planner walks ``max_required`` from ``present`` to
+``target`` in ``STEP_KW`` increments, settles each via
+``WebSessionEngine.create()``, dedups consecutive snapshots with identical
+relay+pack state, then emits one ``ControlStep`` per changed relay between
+kept pairs.
 
-Algorithm (4 steps):
-
-1. **Progressive demand series** — for step ``i``, each port's
-   ``max_required`` = ``present + sign * i * STEP_KW`` (clamped to
-   ``[min(present, target), max(present, target)]``).
-2. **Per-step settle** — call ``WebSessionEngine.create(system, ports_i)`` and
-   capture ``to_visual_snapshot()``.
-3. **Dedup** — drop snapshots whose ``(relay_state, pack_owner)`` tuple is
-   identical to the previous kept snapshot.
-4. **Adjacent diff + describe** — for each kept pair ``(prev, curr)``, emit
-   one ``ControlStep`` per relay whose state changed, using ``_describe`` and
-   the per-step snapshot ``curr`` directly (no stitching — every snapshot is
-   already a mcu_control-settled steady state).
-
-References: ``docs/SPEC-WEB-API.md`` §3.3, ``docs/SPEC.md`` §11,
-``outputs/SPIKE_E_REPORT.md`` (validation), ``outputs/STEP_Z1_REPORT.md``.
+References: ``docs/SPEC-WEB-API.md`` §3.3, ``docs/SPEC.md`` §11.
 """
 from __future__ import annotations
 
@@ -169,11 +154,9 @@ def _attribute_flip(
 ) -> int:
     """Decide which port_id this flip is attributed to.
 
-    Output relay: owner_port_id is on the relay itself.
-    Inter-group / bridge: look at packs adjacent to the relay; favour the
-    port that owns them in final (closing) or initial (opening). On
-    "leaving meets arriving" tie, prefer the departing port (release-then-
-    engage).
+    Output relays use their own owner_port_id. Inter-group/bridge relays use
+    adjacent pack owners (final if closing, initial if opening); ties favour
+    the departing port (release-then-engage).
     """
     if post.kind == "output":
         # Should always have owner_port_id
@@ -332,12 +315,9 @@ def _stitch_snapshot(
 ) -> VisualSnapshot:
     """Build a mid-state snapshot blending ``initial`` and ``final``.
 
-    Relays: applied flips → final value; otherwise → initial.
-    Packs: per-pack heuristic — switch to final ownership only after the
-        relay flips that connect this pack's group to its (final or initial)
-        owner's anchor have all been applied.
-    Cars: derived from packs + current output relay state.
-    rec_bds: derived from packs.
+    Relays take their final value if their flip is applied, else initial.
+    Packs switch to final ownership only once the gating relay flips are all
+    applied. Cars and rec_bds are derived from the resulting packs/relays.
     """
     final_relay = {r.id: r for r in final.relays}
     initial_relay = {r.id: r for r in initial.relays}
@@ -442,9 +422,9 @@ def _resolve_pack_owner(
 ) -> Optional[int]:
     """Decide who owns a transitioning pack at the current applied state.
 
-    Heuristic: identify the candidate port (final owner if claiming, initial
-    owner if releasing). Find the relay flip(s) that "gate" this pack. If
-    every gating flip is applied → use final owner; else → use initial.
+    Identifies the candidate port and its gating relay flips: when claiming,
+    all gating flips must be applied to use the final owner; when releasing,
+    any applied gating flip switches to the final owner.
     """
     candidate_port: Optional[int] = fp.owner_port_id or ip.owner_port_id
     if candidate_port is None:
@@ -516,8 +496,7 @@ _RELAY_ID_RE = re.compile(r"^M(\d+)\.([OR])(\d+)$")
 
 def _display_relay_id(relay_id: str) -> str:
     """Render an internal relay_id (M{n}.O{k} / M{n}.R{k}) for human-facing
-    step descriptions. Does NOT mutate the underlying relay_id used in data
-    structures — display only."""
+    step descriptions; display only, does not mutate the stored relay_id."""
     m = _RELAY_ID_RE.match(relay_id)
     if not m:
         return relay_id  # unknown format → pass through unchanged
@@ -566,14 +545,13 @@ async def plan_transition(
     initial_state: VisualSnapshot,
     final_state: VisualSnapshot,
 ) -> List[ControlStep]:
-    """Walk present→target via progressive ``max_required``, emit one
-    ``ControlStep`` per relay state change observed between consecutive
-    mcu_control-settled snapshots.
+    """Walk present→target via progressive ``max_required``, emitting one
+    ``ControlStep`` per relay state change between consecutive settled
+    snapshots.
 
-    ``initial_state`` / ``final_state`` are accepted for backwards-compatible
-    signature but are not consulted directly — every snapshot in the emitted
-    sequence is produced by ``WebSessionEngine.create()`` so SPEC §11 ordering
-    comes for free from mcu_control.
+    ``initial_state`` / ``final_state`` are kept for signature compatibility
+    but unused — every emitted snapshot comes from ``WebSessionEngine.create()``
+    so SPEC §11 ordering is free.
     """
     raw = await _generate_progressive_snapshots(system, car_ports)
     deduped = _dedup_snapshots(raw)

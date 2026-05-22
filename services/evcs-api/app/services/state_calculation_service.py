@@ -1,18 +1,8 @@
 """Compute VisualSnapshot — FR-02, FR-03, FR-04, FR-05, FR-09.
 
 Thin wrapper around ``WebSessionEngine`` (rebuild-engine snapshot strategy,
-SPEC-WEB-API §3.2). Two entry points are exposed:
-
-- :func:`compute_snapshot_async` — preferred for FastAPI route handlers; uses
-  ``WebSessionEngine.create()`` for full settle-loop convergence; appends
-  FR-09 capacity warnings.
-- :func:`compute_snapshot` — sync wrapper for legacy sync callers; internally
-  ``asyncio.run``s the async version. Must not be called from inside a
-  running event loop.
-
-Note (Cleanup step): ``evcs_core_adapter`` was migrated off this module in
-F14.2 and now uses ``WebSessionEngine.create()`` directly. ``compute_snapshot``
-is currently called only by snapshot-route fallback paths.
+SPEC-WEB-API §3.2). Exposes :func:`compute_snapshot_async` (preferred for
+FastAPI handlers) and a sync :func:`compute_snapshot` wrapper.
 """
 from __future__ import annotations
 
@@ -31,13 +21,10 @@ async def compute_snapshot_async(
     car_ports: List[CarPortInput],
     cycle: bool = True,
 ) -> VisualSnapshot:
-    """Async entry — preferred for FastAPI route handlers.
+    """Async entry (preferred for FastAPI handlers).
 
-    Builds a fresh ``WebSessionEngine`` (rebuild-engine snapshot strategy,
-    SPEC-WEB-API §3.2), drives the actor settle loop to convergence, then
-    extracts a ``VisualSnapshot``. Appends FR-09 capacity warnings (soft —
-    not a hard 422; FR-14 surfaces its own ``TARGET_EXCEEDS_CAPACITY``
-    warning via the same channel).
+    Builds a fresh ``WebSessionEngine``, settles to convergence, extracts a
+    ``VisualSnapshot``, and appends FR-09 capacity warnings (soft, not a 422).
     """
     engine = await WebSessionEngine.create(system, car_ports)
     snapshot = engine.to_visual_snapshot(palette_cycle=cycle)
@@ -52,10 +39,8 @@ async def compute_snapshot_async(
 def compute_snapshot(
     system: SystemConfig, car_ports: List[CarPortInput], cycle: bool = True
 ) -> VisualSnapshot:
-    """Sync entry — kept for sync callers.
+    """Sync entry wrapping :func:`compute_snapshot_async` via ``asyncio.run``.
 
-    Internally wraps :func:`compute_snapshot_async` with ``asyncio.run``.
-    Must NOT be called from inside a running event loop. For async callers,
-    use :func:`compute_snapshot_async` directly.
+    Must NOT be called from inside a running event loop.
     """
     return asyncio.run(compute_snapshot_async(system, car_ports, cycle=cycle))

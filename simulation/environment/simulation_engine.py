@@ -18,9 +18,8 @@ from simulation.utils.validator import Validator
 class SimulationEngine:
     """Main loop driver.
 
-    Uses asyncio + Queue (Actor Model) when num_mcus > 1 so MCUs can
-    exchange borrow/return protocol messages. Falls back to a synchronous
-    loop for single-MCU configs (Phase 3 back-compat).
+    Uses asyncio + Queue (Actor Model) when num_mcus > 1 for borrow/return
+    messaging; falls back to a synchronous loop for single-MCU configs.
     """
 
     def __init__(
@@ -197,9 +196,8 @@ class SimulationEngine:
                 break
 
     def _all_charging_complete(self) -> bool:
-        """True when there is ≥1 active vehicle and every connected EV has
-        reached its target SOC (scenario-finished predicate). Holds off while
-        any MCU is still mid-departure so the §11 open sequence can finish."""
+        """True once every connected EV has reached target SOC. Holds off
+        while any MCU is mid-departure so the §11 open sequence can finish."""
         active = [o.connected_vehicle for o in self._all_outputs
                   if o.connected_vehicle is not None]
         if not active:

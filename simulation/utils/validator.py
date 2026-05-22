@@ -16,17 +16,11 @@ if TYPE_CHECKING:
 class Validator:
     """Consistency + boundary checks for simulation snapshots.
 
-    Two output streams:
-      1. Station-level violations — contiguous-interval / multi-owner
-         aggregated from ``ChargingStation.validate()``.
-      2. Boundary-consistency log entries (SPEC §9) comparing each
-         adjacent MCU pair's per-MCU ``ModuleAssignment`` views over
-         the cells they BOTH cover. With per-MCU ownership (SPEC §10)
-         this check is now load-bearing: divergence indicates the
-         protocol layer failed to keep mirrors in sync.
-
-    The engine calls ``check(step_index)`` each step and stores results.
-    ``has_failures()`` gates CSV / Timing-Diagram export.
+    Two streams: (1) station-level contiguity / multi-owner violations from
+    ``ChargingStation.validate()``; (2) boundary-consistency entries (SPEC §9)
+    comparing each adjacent MCU pair's ``ModuleAssignment`` over shared cells —
+    load-bearing under per-MCU ownership (SPEC §10). ``check(step_index)`` runs
+    each step; ``has_failures()`` gates CSV / Timing-Diagram export.
     """
 
     def __init__(self, station: ChargingStation):
@@ -49,9 +43,8 @@ class Validator:
     # ── Boundary consistency (SPEC §9) ───────────────────────────────────
 
     def _boundary_checks(self, step_index: int) -> list[dict[str, Any]]:
-        """For each adjacent MCU pair, compare every cell that appears in
-        BOTH MCUs' 3-MCU ``ModuleAssignment`` windows. A disagreement on
-        owner identity for any shared cell is flagged inconsistent."""
+        """Flag inconsistency where adjacent MCU pairs disagree on owner
+        identity for any cell shared by both 3-MCU ``ModuleAssignment`` windows."""
         station = self.station
         N = station.num_mcus
         if N <= 1:

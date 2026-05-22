@@ -1,14 +1,10 @@
 """Per-MCU RelayMatrix — SPEC §5.1 + §10.
 
-Each MCU owns its own instance covering a fixed 3-MCU window (left
-neighbor + self + right neighbor). For ``num_mcus == 1`` the window
-collapses to just self (6×6). All public methods accept **absolute**
-group/output indices and translate to local on entry; calls referencing
-nodes outside this MCU's window are silently rejected (``is_legal`` →
-``False``, ``get_state`` → ``-1``, ``set_state`` → no-op).
-
-This replaces the previous globally-sized shared instance — see SPEC §10:
-*"每個 MCU 都擁有自已的 RelayMatrix 與 ModuleAssignment 且不做資源共享"*.
+Each MCU owns an instance covering a 3-MCU window (left + self + right);
+``num_mcus == 1`` collapses to self only (6×6). Public methods take
+**absolute** indices and translate to local on entry; nodes outside the
+window are silently rejected (``is_legal`` → ``False``, ``get_state`` →
+``-1``, ``set_state`` → no-op). Per SPEC §10, instances are not shared.
 """
 
 from __future__ import annotations
@@ -102,8 +98,8 @@ class RelayMatrix:
     # ── Absolute ↔ local translation ─────────────────────────────────
 
     def abs_to_local_group(self, abs_g: int) -> int | None:
-        """Translate an absolute group index into a local slot index, or
-        ``None`` if the group is outside this MCU's 3-MCU window."""
+        """Translate an absolute group index to local, or ``None`` if outside
+        this MCU's window."""
         owner_mcu = abs_g // GROUPS_PER_MCU
         for slot, mcu in enumerate(self._slot_to_mcu):
             if mcu == owner_mcu:

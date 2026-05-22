@@ -1,7 +1,6 @@
-"""Static topology preview — what the station *looks like* given a config.
+"""Static topology preview for ``POST /topology/preview`` (FR-01 + FR-10 + FR-11).
 
-Used by ``POST /topology/preview`` (FR-01 + FR-10 + FR-11). Carries no runtime
-state; see ``schemas/snapshot.py`` for the dynamic ``VisualSnapshot``.
+Carries no runtime state; see ``schemas/snapshot.py`` for the dynamic ``VisualSnapshot``.
 """
 from __future__ import annotations
 

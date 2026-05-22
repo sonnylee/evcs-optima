@@ -1,17 +1,11 @@
 """Rebuild-engine adapter — Step F09.1 (FR-09 / FR-14).
 
-Each ``WebSessionEngine`` instance wraps **one** freshly-built
-``simulation.SimulationEngine``: build with the request's demand → drive the
-actor loop until borrow/return converges → read steady-state hardware →
-produce a ``VisualSnapshot``. The engine is throwaway and not meant to be
-reused across requests (SPEC-WEB-API §3.2 / §3.3).
-
-Sprint 2 step S2.1 unlocks ``rec_bd_count`` (FR-10 first phase) so any
-1..12 MCU layout is now accepted. Per-REC-BD ``module_powers`` is still
-treated as informational only — the simulation core continues to use its
-hardcoded ``[50, 75, 75, 50]`` group layout (FR-11 dynamic powers land in
-S2.2 alongside ``RectifierBoard`` / ``RelayMatrix`` / ``ModuleAssignment``
-shape changes).
+Each ``WebSessionEngine`` wraps one freshly-built ``SimulationEngine``: build
+with the request's demand → settle the actor loop → read steady-state hardware
+→ produce a ``VisualSnapshot``. Throwaway, not reused across requests
+(SPEC-WEB-API §3.2 / §3.3). S2.1 accepts any 1..12 MCU layout; per-REC-BD
+``module_powers`` is informational until S2.2 (core still hardcodes
+``[50, 75, 75, 50]``).
 
 Spike-validated state-read points (S2.2 must update if these change):
   - ``engine.station.boards[i].output_relays[local_idx]``
@@ -67,8 +61,6 @@ def _group_to_pack_range(rec_bd_config: RecBdConfig, group_local_idx: int) -> Tu
     """Return ``(pack_start, pack_end_exclusive)`` for a group within its REC BD.
 
     For [50, 75, 75, 50]: g0→(0,2)  g1→(2,5)  g2→(5,8)  g3→(8,10).
-    Useful for Sprint 2 FR-11 too — pack ranges are derived from
-    ``module_powers`` cumulatively.
     """
     start = 0
     for i, p in enumerate(rec_bd_config.module_powers):
@@ -82,32 +74,13 @@ def _group_to_pack_range(rec_bd_config: RecBdConfig, group_local_idx: int) -> Tu
 class WebSessionEngine:
     """Rebuild-engine adapter for FR-09 / FR-14.
 
-    S2.1 scope: any ``rec_bd_count`` ∈ [1, 12]; ``module_powers`` is
-    informational (simulation core still hardcodes [50,75,75,50]).
-    FR-11 dynamic powers land in S2.2.
+    S2.1 scope: any ``rec_bd_count`` ∈ [1, 12]; ``module_powers`` informational
+    (core still hardcodes [50,75,75,50]); FR-11 dynamic powers land in S2.2.
 
-    **Construction patterns**:
-
-    - Async path (canonical for production)::
-
-        engine = await WebSessionEngine.create(system, ports)
-        snap = engine.to_visual_snapshot()
-
-    - Sync path (for tests with all-zero or anchor-only demand)::
-
-        engine = WebSessionEngine(system, ports)  # no settle
-        snap = engine.to_visual_snapshot()
-
-    The sync ``__init__`` only configures anchor + initial 2 groups (the
-    SPEC §11 per-Output minimum guarantee — default config: 125 kW).
-    Anything requiring cross-MCU borrow or demand above that minimum must use
-    ``create()``, otherwise the snapshot will reflect partial allocation.
-
-    **Async safety**:
-    Both ``create()`` and ``__init__`` are safe to call from async code.
-    The sync ``__init__`` does not spin up a new event loop, so it is also
-    safe inside a running FastAPI request — but its snapshot will be
-    incomplete unless the demand fits the anchor-only envelope above.
+    Use ``await create(system, ports)`` (canonical) for full settle. Sync
+    ``WebSessionEngine(system, ports)`` only configures anchor + initial 2
+    groups (SPEC §11 minimum guarantee, default 125 kW); demand above that or
+    cross-MCU borrow yields a partial snapshot. Both are async-safe.
     """
 
     def __init__(
@@ -115,12 +88,10 @@ class WebSessionEngine:
         system_config: SystemConfig,
         car_ports: List[CarPortInput],
     ) -> None:
-        """Sync constructor — only validates and builds the SimulationEngine.
+        """Sync constructor — builds the SimulationEngine without settling.
 
-        Use :meth:`WebSessionEngine.create` (async) for the full settle path.
-        Direct ``__init__`` use is reserved for tests that don't need
-        cross-MCU borrows (i.e. all-zero or per-port ≤ that Output's SPEC §11
-        minimum guarantee — default config: 125 kW — with no cross-MCU demand).
+        Use :meth:`create` (async) for the full settle path; direct use is for
+        tests with all-zero or anchor-only demand and no cross-MCU borrow.
         """
         self._system_config = system_config
         self._car_ports = list(car_ports)
@@ -141,13 +112,11 @@ class WebSessionEngine:
         system_config: SystemConfig,
         car_ports: List[CarPortInput],
     ) -> "WebSessionEngine":
-        """Async factory — builds the engine and drives the actor settle loop.
+        """Async factory — builds the engine and drives the settle loop.
 
-        This is the canonical entry point for FR-09 and FR-14 paths.
-        Required when any port's ``max_required`` exceeds that Output's SPEC
-        §11 minimum guarantee (default config: 125 kW) or cross-MCU borrow is
-        needed (the sync constructor only completes anchor + initial groups
-        via ``handle_vehicle_arrival``).
+        Canonical entry point for FR-09 / FR-14. Required when any port's
+        ``max_required`` exceeds the SPEC §11 minimum (default 125 kW) or
+        cross-MCU borrow is needed.
         """
         instance = cls(system_config, car_ports)
         if any(p.max_required > 0 for p in instance._car_ports):

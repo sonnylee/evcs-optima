@@ -13,17 +13,10 @@ def _format_time(seconds: float) -> str:
 class VisionOutput:
     """Collects per-step snapshots and emits the SPEC §17 CSV trace.
 
-    Columns (dynamic per MCU count, English only):
-      Step | Time | Event | Outputs Ops | Relays Ops |
-      M{n}.O1 | M{n}.O2 |
-      M{n}.R1 | M{n}.R2 | M{n}.R3 | M{n}.R4 |
-      M{n}.EV1 Available Power | M{n}.EV1 Max Require Power |
-      M{n}.EV2 Available Power | M{n}.EV2 Max Require Power
-
-    Per-MCU column meanings:
-      - M{n}.O1 / M{n}.O2 : the output power-switch relay state (ON/OFF).
-      - M{n}.R1           : left bridge relay from prev MCU (SPEC §2.2 / §3).
-      - M{n}.R2 / R3 / R4 : inter-group relays (G0-G1, G1-G2, G2-G3).
+    Columns are dynamic per MCU count. Per-MCU meanings:
+      - M{n}.O1 / O2  : output power-switch relay state (ON/OFF).
+      - M{n}.R1       : left bridge relay from prev MCU (SPEC §2.2 / §3).
+      - M{n}.R2/R3/R4 : inter-group relays (G0-G1, G1-G2, G2-G3).
 
     Blocks CSV output when the Validator reports failures.
     """

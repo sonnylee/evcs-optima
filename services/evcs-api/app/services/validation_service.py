@@ -173,11 +173,9 @@ def validate_rec_bd_count(n: int) -> List[ErrorDetail]:
 # ---------------------------------------------------------------------------
 
 def validate_priorities(car_ports: List[CarPortInput], rec_bd_count: int) -> List[ErrorDetail]:
-    """Priorities (if any set) must be unique integers in [1, N] where N = 2 × rec_bd_count.
+    """Set priorities must be unique integers in [1, N], N = 2 × rec_bd_count (FR-16).
 
-    Per FR-16: at least two ports must have priority set for ``Apply and Generate``
-    to proceed; that specific check is enforced at control-step generation time,
-    not here — here we only validate the shape of whatever priorities are present.
+    The "at least two set" check is enforced at control-step generation, not here.
     """
 
     n = rec_bd_count * 2
@@ -226,9 +224,8 @@ def priorities_ready_for_apply(car_ports: List[CarPortInput]) -> bool:
 def warn_target_within_capacity(
     car_ports: List[CarPortInput], system: SystemConfig
 ) -> List[WarningDetail]:
-    """F14.3a: Sum of Target may exceed total station capacity — warning, not
-    error. Engine quantizes per-port to ≤ available pack capacity; overload
-    is silently truncated (spike obs 5)."""
+    """F14.3a: warn (not error) when sum of Target exceeds total capacity;
+    engine silently truncates overload per-port (spike obs 5)."""
 
     total_target = sum(cp.target for cp in car_ports)
     total_capacity = system.total_capacity_kw
@@ -249,16 +246,8 @@ def warn_target_within_capacity(
 def validate_max_required_within_capacity(
     car_ports: List[CarPortInput], system: SystemConfig
 ) -> List[WarningDetail]:
-    """Sum of Max Required across all ports should not exceed total capacity.
-
-    ``SimulationEngine`` silently truncates demand on overload (spike
-    §observation 5), so this is a **warning** emitted into the snapshot,
-    not a hard 422. FR-09 path: warn but proceed; UI displays the warning.
-
-    Distinct from :func:`validate_target_within_capacity` — that one is
-    FR-14 hard-error path because step generation cannot proceed past
-    capacity. FR-09 is mid-edit and a soft warning is the right UX.
-    """
+    """Warn (FR-09 soft, not a 422) when sum of Max Required exceeds total
+    capacity; ``SimulationEngine`` silently truncates overload (spike obs 5)."""
     total_demand = sum(cp.max_required for cp in car_ports)
     total_capacity = system.total_capacity_kw
     if total_demand > total_capacity:

@@ -1,11 +1,8 @@
-"""Topology helpers for multi-MCU layouts.
+"""Topology helpers for multi-MCU layouts (SPEC §2.2).
 
-SPEC §2.2 defines the MCU arrangement:
-  * N <= 2 → linear chain (bridges between consecutive MCUs only)
-  * N >= 3 → ring (bridges wrap around to close the loop)
-
-Centralizing the ring-vs-linear rules here avoids duplicating the same
-arithmetic across `RelayMatrix`, `ModuleAssignment`, and `Validator`.
+N <= 2 → linear chain; N >= 3 → ring (bridges wrap to close the loop).
+Centralizes ring-vs-linear rules shared by ``RelayMatrix``,
+``ModuleAssignment``, and ``Validator``.
 """
 
 from __future__ import annotations
@@ -58,10 +55,9 @@ def mcu_of_output(abs_output_idx: int) -> int:
 def local_window(self_mcu: int, num_mcus: int) -> dict[str, int | None]:
     """3-MCU window for `self_mcu` (SPEC §5.1).
 
-    Returns ``{"left": prev, "self": self_mcu, "right": next}``. Neighbor
-    slots are ``None`` only for ``num_mcus <= 1`` (no neighbors at all) or
-    in the linear ``N == 2`` case where one side has no neighbor on that
-    edge. SPEC §7.1 ring formula is used when ``is_ring(num_mcus)``.
+    Returns ``{"left": prev, "self": self_mcu, "right": next}``. Neighbor slots
+    are ``None`` for ``num_mcus <= 1`` or at the open edges of linear ``N == 2``.
+    Uses the SPEC §7.1 ring formula when ``is_ring(num_mcus)``.
     """
     if num_mcus <= 1:
         return {"left": None, "self": self_mcu, "right": None}

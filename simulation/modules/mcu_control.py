@@ -154,7 +154,7 @@ class MCUControl(Actor, SimulationModule):
     # ── Synchronous step (Phase 3 back-compat) ───────────────────────
 
     def step(self, dt: float) -> None:
-        """Synchronous local-only step (used by legacy single-MCU paths)."""
+        """Synchronous local-only step (legacy single-MCU paths)."""
         self._run_local_logic()
         self._step_index += 1
 
@@ -196,9 +196,8 @@ class MCUControl(Actor, SimulationModule):
     # ── Per-step decision helpers (shared by sync + async paths) ──────
 
     def _pre_step_guard(self, state: OutputPowerState, output: Any) -> bool:
-        """Return True if the per-tick borrow/return loop should skip this
-        output: either no vehicle is connected, or a relay-phase transition
-        is in flight."""
+        """True if the borrow/return loop should skip this output (no vehicle
+        connected, or a relay-phase transition is in flight)."""
         if output.connected_vehicle is None:
             state.borrow_counter = 0
             state.return_counter = 0
@@ -209,9 +208,9 @@ class MCUControl(Actor, SimulationModule):
     def _tick_borrow_condition(
         self, state: OutputPowerState, output: Any
     ) -> bool:
-        """SPEC §6.1 trigger: Present ≈ Available AND demand exceeds Available
-        for `_consecutive_threshold` ticks. Updates `borrow_counter` in place,
-        returns True iff the threshold was hit this tick."""
+        """SPEC §6.1 trigger: Present ≈ Available and demand exceeds Available
+        for `_consecutive_threshold` ticks. Updates `borrow_counter`; returns
+        True iff the threshold was hit this tick."""
         vehicle = output.connected_vehicle
         present = output.present_power_kw
         available = output.available_power_kw
@@ -228,10 +227,9 @@ class MCUControl(Actor, SimulationModule):
     def _tick_return_condition(
         self, state: OutputPowerState, output: Any, pre_available: float
     ) -> bool:
-        """SPEC §6.2 trigger: (Available − demand) ≥ smallest edge Group's
-        power for `_consecutive_threshold` ticks. `pre_available` is the
-        pre-borrow snapshot — preserves historical behavior where a borrow
-        on the same tick does NOT immediately enable a return."""
+        """SPEC §6.2 trigger: (Available − demand) ≥ smallest edge Group's power
+        for `_consecutive_threshold` ticks. `pre_available` is the pre-borrow
+        snapshot, so a same-tick borrow does not immediately enable a return."""
         edge_power = self._smallest_edge_group_power(state)
         demand = output.connected_vehicle.max_require_power_kw
         if edge_power is not None and (pre_available - demand) >= edge_power - 0.01:
@@ -337,8 +335,8 @@ class MCUControl(Actor, SimulationModule):
         self, state: OutputPowerState, target: int,
         already_assigned: bool = False,
     ) -> None:
-        """`target` may be a virtual index (out of [0, num_groups)) for ring
-        wrap; physical index is used when talking to ModuleAssignment."""
+        """`target` may be virtual (ring wrap); physical index is used for
+        ModuleAssignment."""
         if not state.has_interval:
             return
         output_idx = self._output_base + state.output_local_idx
@@ -385,15 +383,11 @@ class MCUControl(Actor, SimulationModule):
     # ── Incoming protocol handlers ───────────────────────────────────
 
     async def _handle_borrow_request(self, msg: BorrowRequest) -> None:
-        """Neighbor asks to borrow group `msg.group_idx` (in our territory).
+        """Neighbor asks to borrow group `msg.group_idx` in our territory.
 
-        Atomically reserve on grant — closing the cross-actor race where two
-        requesters both observe the group as idle and both get granted.
-
-        SPEC §11: only the owning MCU may switch its own relays. After
-        granting, resync our own inter-group / bridge relays here (stamped
-        at the requester's `step_index`) instead of letting the borrower
-        reach in and toggle them remotely.
+        Atomically reserves on grant (closes the cross-actor double-grant race).
+        SPEC §11: only the owning MCU switches its relays — resync our own
+        inter-group / bridge relays here, stamped at the requester's step_index.
         """
         granted = self._ma.assign_if_idle(
             msg.requester_output_idx, msg.group_idx,
@@ -405,14 +399,9 @@ class MCUControl(Actor, SimulationModule):
     async def _handle_return_notify(self, msg: ReturnNotify) -> None:
         """Neighbor informs us they are releasing a group in our territory.
 
-        With per-MCU MAs (SPEC §10), the lender MUST release the cell
-        from its own MA — the borrower's release in `_apply_return`
-        only updates the borrower's local mirror.
-
-        SPEC §11: only the owning MCU may switch its relays. After
-        releasing, resync our own inter-group / bridge relays here
-        (stamped at the requester's `step_index`) instead of letting
-        the borrower reach in and toggle them remotely.
+        SPEC §10: the lender must release the cell from its own MA (the
+        borrower's `_apply_return` only updates its mirror). SPEC §11: resync
+        our own relays here, stamped at the requester's step_index.
         """
         owner = self._ma.get_owner(msg.group_idx)
         if owner is not None:
@@ -423,11 +412,9 @@ class MCUControl(Actor, SimulationModule):
     async def _handle_conflict_release(self, msg: ConflictRelease) -> None:
         """Neighbor needs a group we own; forcibly release from the owning output.
 
-        With per-MCU MAs (SPEC §10), `_force_return_group` only mutates this
-        MCU's own MA. Any released cell that physically belongs to a
-        DIFFERENT MCU lives there as a borrow mirror — the actual lender's
-        MA still shows our output as owner. Mirror-sync via `ReturnNotify`
-        so the lender clears its authoritative entry too.
+        SPEC §10: `_force_return_group` only mutates this MCU's own MA. For a
+        released cell physically owned by another MCU, mirror-sync via
+        `ReturnNotify` so the lender clears its authoritative entry.
         """
         owner = self._ma.get_owner(msg.group_idx)
         if owner is None:
@@ -597,9 +584,9 @@ class MCUControl(Actor, SimulationModule):
         self._sync_output(output_local_idx)
 
     def initiate_vehicle_departure(self, output_local_idx: int) -> None:
-        """Kick off phased departure (SPEC §11): open inter-group relays next
-        tick, open Output relay the tick after, then release assignments and
-        disconnect the vehicle. Idempotent if already departing."""
+        """Kick off phased departure (SPEC §11): open inter-group relays, then
+        the Output relay, then release assignments and disconnect the vehicle.
+        Idempotent if already departing."""
         state = self._output_states[output_local_idx]
         if state.pending_intergroup_open != 0 or state.pending_output_relay_open != 0:
             return
@@ -610,9 +597,8 @@ class MCUControl(Actor, SimulationModule):
         state.pending_intergroup_open = 1
 
     def _open_departure_intergroup_relays(self, state: OutputPowerState) -> None:
-        """Open inter-group / bridge relays uniquely needed by the departing
-        output's interval. Preserve relays still needed by the other local
-        output (or by foreign outputs borrowing our territory)."""
+        """Open inter-group / bridge relays needed only by the departing output,
+        preserving those still needed by other local or foreign outputs."""
         if not state.has_interval:
             return
         departing = set(self._compute_required_relays(
@@ -694,18 +680,13 @@ class MCUControl(Actor, SimulationModule):
         step_index: int | None = None,
     ) -> list[int]:
         """Release `group_idx` (physical) plus everything beyond it on the same
-        edge of the interval. Wrap-aware: the side to shrink is chosen by the
-        target's virtual position relative to the anchor, not by comparing
-        physical indices.
+        edge of the interval. Wrap-aware: the shrink side is chosen by the
+        target's virtual position relative to the anchor.
 
-        Returns the list of physical group indices that were released — the
-        caller can use this list to mirror-sync their own MA (SPEC §10) when
-        the call crosses an MCU boundary.
-
-        `step_index`, when supplied (cross-MCU arrival path), is adopted as
-        our own step index before the internal `_apply_global_relay_state()`
-        runs, so the resulting relay events are stamped at the requester's
-        tick instead of our stale local one.
+        Returns the released physical group indices, for the caller to
+        mirror-sync its MA (SPEC §10) on cross-MCU calls. `step_index`, when
+        supplied, is adopted before `_apply_global_relay_state()` so relay
+        events are stamped at the requester's tick.
         """
         if step_index is not None:
             self._step_index = step_index
@@ -769,9 +750,8 @@ class MCUControl(Actor, SimulationModule):
     ) -> int | None:
         """SPEC §6.1 local-first, then §2.2 right > left within same locality.
 
-        Returns a VIRTUAL index (may be negative or >= num_groups_total in
-        ring topology); callers should wrap to a physical index when
-        indexing into ModuleAssignment.
+        Returns a VIRTUAL index (may wrap in ring topology); callers wrap to
+        physical when indexing into ModuleAssignment.
         """
         if not state.has_interval:
             return None
@@ -920,9 +900,8 @@ class MCUControl(Actor, SimulationModule):
     ) -> list[Relay]:
         """Relays owned by THIS MCU that must be CLOSED for this interval.
 
-        Accepts virtual indices (ring wrap). Walks each consecutive virtual
-        pair (v, v+1) and asks: is there a physical wire between wrap(v) and
-        wrap(v+1) in my territory? — if so, that relay must close.
+        Accepts virtual indices (ring wrap): each consecutive pair (v, v+1)
+        with a physical wire in my territory contributes its relay.
         """
         relays: list[Relay] = []
         if include_output:
@@ -1022,11 +1001,10 @@ class MCUControl(Actor, SimulationModule):
         return local_idx + self._group_base
 
     def _wrap(self, virtual_idx: int) -> int:
-        """Map a (possibly out-of-range) virtual group index to a physical one.
+        """Map a virtual group index to a physical one.
 
-        Ring-wrap is used only in ring topology (num_mcus >= 3). Linear
-        topologies leave the index untouched so out-of-range values still
-        fall through the bounds checks in callers.
+        Wraps only in ring topology (num_mcus >= 3); linear leaves it untouched
+        so out-of-range values fall through callers' bounds checks.
         """
         if self._ring_enabled:
             return virtual_idx % self._num_groups_total
@@ -1049,10 +1027,10 @@ class MCUControl(Actor, SimulationModule):
     def _foreign_virtual_span(
         self, foreign_output_idx: int
     ) -> tuple[int, int] | None:
-        """Read a sibling Output's (virtual) interval through its MCU.
+        """Read a sibling Output's virtual interval through its MCU.
 
-        Only valid for outputs on THIS MCU or an adjacent one — cross-MCU
-        borrow is restricted to neighbors per SPEC §11 (Ring Topology).
+        Valid only for this MCU or an adjacent one (SPEC §11 restricts
+        cross-MCU borrow to neighbors).
         """
         owner_mcu_id = foreign_output_idx // OUTPUTS_PER_MCU
         owner_local = foreign_output_idx - owner_mcu_id * OUTPUTS_PER_MCU
@@ -1080,10 +1058,9 @@ class MCUControl(Actor, SimulationModule):
         return None
 
     def _get_neighbor_for_group(self, group_phys: int) -> MCUControl | None:
-        """Pick the neighbor MCU that owns `group_phys` for borrow/return
-        dispatch. Non-adjacent groups fall through to `left_neighbor` — those
-        cases should already be filtered by `_can_assign`'s reachability check
-        (SPEC §2.2: borrow is restricted to immediate neighbors)."""
+        """Pick the neighbor MCU owning `group_phys` for borrow/return dispatch.
+        Non-adjacent groups fall through to `left_neighbor` (already filtered by
+        `_can_assign` reachability; SPEC §2.2 restricts borrow to neighbors)."""
         neighbor_mcu = group_phys // GROUPS_PER_MCU
         if neighbor_mcu == (self._mcu_id + 1) % self._num_mcus:
             return self.right_neighbor

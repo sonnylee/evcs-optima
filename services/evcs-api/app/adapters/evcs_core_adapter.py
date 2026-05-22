@@ -1,13 +1,9 @@
 """EvcsCoreAdapter — orchestration entry point for FR-14 Apply and Generate.
 
-Phase 3 / Step F14.2 makes this layer fully async: both ``_present_warnings``
-and ``generate_control_steps`` are ``async def`` and call
-``WebSessionEngine.create()`` directly (no ``compute_snapshot`` indirection).
-The two endpoint engines (initial / final) are independent — separate
-``SimulationEngine`` instances built from OFF, settled to the demand-specific
-steady state, and discarded after the snapshot is read (SPEC-WEB-API §3.3).
-
-Routes use this module as their single entry point.
+Fully async: both ``_present_warnings`` and ``generate_control_steps`` call
+``WebSessionEngine.create()`` directly. The initial / final endpoint engines
+are independent ``SimulationEngine`` instances, each built from OFF and settled
+to its demand-specific steady state, then discarded (SPEC-WEB-API §3.3).
 """
 from __future__ import annotations
 
@@ -45,19 +41,12 @@ class PrioritiesIncompleteError(AdapterError):
 async def _present_warnings(
     system: SystemConfig, car_ports: List[CarPortInput]
 ) -> List[str]:
-    """FR-14: warn if user-entered Present is unreasonable (SPEC §FR-14 line 490).
+    """FR-14: warn if user-entered Present is unreasonable (SPEC §FR-14).
 
-    Detected cases:
-    * Sum of ``present`` exceeds station capacity (total demand unreasonable).
-    * The recomputed allocation under ``present`` does not match the
-      user-entered ``present`` (i.e. station can't actually deliver this).
-
-    Per-port ``present > max_required`` is NOT checked: FR-14 UI does not
-    set ``max_required`` (Fr14ControlTable edits priority/present/target
-    only) and ``generate_control_steps`` dynamically overrides
-    ``max_required`` with ``present``/``target`` for engine input — leaving
-    raw ``max_required`` stale at 0 and any per-port comparison a false
-    positive against legitimate FR-14 inputs.
+    Flags two cases: sum of ``present`` exceeds station capacity, or the
+    recomputed allocation under ``present`` can't actually deliver it.
+    Per-port ``present > max_required`` is intentionally not checked — FR-14
+    edits only priority/present/target, so raw ``max_required`` is stale.
     """
 
     warnings: List[str] = []

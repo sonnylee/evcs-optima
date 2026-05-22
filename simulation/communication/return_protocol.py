@@ -15,8 +15,8 @@ async def send_return_notify(
 ) -> bool:
     """Tell neighbor we are releasing a group we had borrowed from it.
 
-    On ack, the lender has cleared its own MA AND resynced its own relays
-    at `step_index` (SPEC §11: relay switching is owned by the local MCU).
+    On ack, the lender has cleared its MA and resynced its relays at
+    `step_index` (SPEC §11).
     """
     if neighbor is None:
         return True

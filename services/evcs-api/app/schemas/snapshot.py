@@ -1,7 +1,7 @@
 """Visual snapshot schemas — FR-02, FR-03, FR-04, FR-05, FR-09.
 
-The snapshot is a pure function of ``(SystemConfig, List[CarPortInput])`` and
-is recomputed on every Max Required change (FR-09).
+A pure function of ``(SystemConfig, List[CarPortInput])``, recomputed on every
+Max Required change (FR-09).
 """
 from __future__ import annotations
 

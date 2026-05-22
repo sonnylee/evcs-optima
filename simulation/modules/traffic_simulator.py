@@ -25,10 +25,9 @@ class ArrivalEvent:
 class TrafficSimulator(SimulationModule):
     """Schedules vehicle arrivals and routes them to Outputs.
 
-    Drives a pre-built schedule of ArrivalEvents. At each step, vehicles whose
-    `arrival_time` has elapsed are instantiated via VehicleGenerator and
-    connected to their target Output. Used by the 14-scenario validation
-    runner (SPEC §16) — all arrivals scheduled at t=0 to saturate the matrix.
+    Drives a pre-built ArrivalEvent schedule: each step spawns due vehicles via
+    VehicleGenerator and connects them to their target Output. Used by the
+    14-scenario validation runner (SPEC §16).
     """
 
     def __init__(

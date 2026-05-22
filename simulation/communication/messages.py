@@ -22,13 +22,10 @@ class Stop:
 class BorrowRequest:
     """MCU-A → neighbor: may I borrow `group_idx`? Reply via `response`.
 
-    `requester_output_idx` is the global Output index that will own the group
-    on grant, so the responder can atomically reserve it on the requester's
-    behalf — closing the check→assign race across actors.
-
-    `step_index` carries the requester's current tick so the lender can stamp
-    its own relay-switch events at the same step (SPEC §11: only the owning
-    MCU may switch its relays — the lender resyncs locally after granting).
+    `requester_output_idx` is the global Output that owns the group on grant,
+    so the responder reserves it atomically (closing the check→assign race).
+    `step_index` lets the lender stamp its relay-switch events at the same
+    step (SPEC §11: only the owning MCU switches its own relays).
     """
     from_mcu: int
     group_idx: int
@@ -41,9 +38,8 @@ class BorrowRequest:
 class ReturnNotify:
     """MCU-A → neighbor: I am releasing `group_idx`. Reply acknowledges.
 
-    `step_index` carries the requester's current tick so the lender can stamp
-    its own relay-switch events at the same step (SPEC §11: only the owning
-    MCU may switch its relays — the lender resyncs locally after release).
+    `step_index` lets the lender stamp its relay-switch events at the same
+    step (SPEC §11: only the owning MCU switches its own relays).
     """
     from_mcu: int
     group_idx: int
