@@ -30,7 +30,11 @@
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('port1:', d['car_ports'][0]\\)\")",
       "Bash(curl -s \"http://localhost:8000/api/v1/sessions/c13869426219485cb3a6602244e96954/snapshot\")",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('cars:', [\\(c['port_id'], c['max_required'], c['allocated_kw'], c['status']\\) for c in d.get\\('cars',[]\\)]\\)\")",
-      "Bash(kill 11621)"
+      "Bash(kill 11621)",
+      "Bash(PYTHONPATH=.:services/evcs-api python -m pytest services/evcs-api/tests -q)",
+      "Bash(PYTHONPATH=. python -m pytest tests/ -q)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
