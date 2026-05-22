@@ -26,6 +26,7 @@ References: ``docs/SPEC-WEB-API.md`` §3.3, ``docs/SPEC.md`` §11,
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -510,33 +511,49 @@ def _resolve_pack_owner(
 # Step 6 — Description builder
 # ---------------------------------------------------------------------------
 
+_RELAY_ID_RE = re.compile(r"^M(\d+)\.([OR])(\d+)$")
+
+
+def _display_relay_id(relay_id: str) -> str:
+    """Render an internal relay_id (M{n}.O{k} / M{n}.R{k}) for human-facing
+    step descriptions. Does NOT mutate the underlying relay_id used in data
+    structures — display only."""
+    m = _RELAY_ID_RE.match(relay_id)
+    if not m:
+        return relay_id  # unknown format → pass through unchanged
+    bd, kind, k = m.group(1), m.group(2), m.group(3)
+    label = "OUTPUT" if kind == "O" else "RELAY"
+    return f"MCU{bd}.{label}{k}"
+
+
 def _describe(
     flip: _RelayFlip,
     snap: VisualSnapshot,
     phase: str,
 ) -> str:
+    rid = _display_relay_id(flip.relay_id)
     pid = flip.port
     if pid <= 0:
         action = "Close" if flip.to_state == "Closed" else "Open"
-        return f"{action} {flip.relay_id}"
+        return f"{action} {rid}"
 
     car = next((c for c in snap.cars if c.port_id == pid), None)
     alloc = car.allocated_kw if car else 0
 
     if phase == _Phase.ARRIVAL:
         if flip.kind == "output":
-            return f"Close {flip.relay_id} (Port {pid} engaged at {alloc} kW)"
-        return f"Close {flip.relay_id} (Port {pid} engaging)"
+            return f"Close {rid} (Port {pid} engaged at {alloc} kW)"
+        return f"Close {rid} (Port {pid} engaging)"
     if phase == _Phase.INCREASE:
-        return f"Close {flip.relay_id} (Port {pid} expanding to {alloc} kW)"
+        return f"Close {rid} (Port {pid} expanding to {alloc} kW)"
     if phase == _Phase.DEPARTURE:
         if flip.kind == "output":
-            return f"Open {flip.relay_id} (Port {pid} disengaged)"
-        return f"Open {flip.relay_id} (Port {pid} releasing)"
+            return f"Open {rid} (Port {pid} disengaged)"
+        return f"Open {rid} (Port {pid} releasing)"
     if phase == _Phase.DECREASE:
-        return f"Open {flip.relay_id} (Port {pid} releasing to {alloc} kW)"
+        return f"Open {rid} (Port {pid} releasing to {alloc} kW)"
     action = "Close" if flip.to_state == "Closed" else "Open"
-    return f"{action} {flip.relay_id}"
+    return f"{action} {rid}"
 
 
 # ---------------------------------------------------------------------------
