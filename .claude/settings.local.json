@@ -34,7 +34,8 @@
       "Bash(PYTHONPATH=.:services/evcs-api python -m pytest services/evcs-api/tests -q)",
       "Bash(PYTHONPATH=. python -m pytest tests/ -q)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git rm *)"
     ]
   }
 }

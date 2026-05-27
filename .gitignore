@@ -7,3 +7,4 @@ associate/verify/interactive/
 .coverage
 *.tsbuildinfo
 package-lock.json
+associate/*.pdf
