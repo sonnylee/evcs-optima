@@ -262,10 +262,22 @@ async def _generate_progressive_snapshots(
 
     snapshots: List[Tuple[List[CarPortInput], VisualSnapshot]] = []
     step = 0
+    prev_demand: Optional[Tuple[int, ...]] = None
+    prev_snap: Optional[VisualSnapshot] = None
     while True:
         ports_at_step = _progressive_demand(car_ports, step)
-        engine = await WebSessionEngine.create(system, ports_at_step)
-        snap = engine.to_visual_snapshot()
+        demand = tuple(cp.max_required for cp in ports_at_step)
+        # optimisation: skip rebuild if demand unchanged
+        # WebSessionEngine.create() is deterministic, so an identical demand
+        # vector settles to the identical snapshot — reuse the previous one
+        # instead of rebuilding the engine for that port set.
+        if demand == prev_demand and prev_snap is not None:
+            snap = prev_snap
+        else:
+            engine = await WebSessionEngine.create(system, ports_at_step)
+            snap = engine.to_visual_snapshot()
+            prev_demand = demand
+            prev_snap = snap
         snapshots.append((ports_at_step, snap))
         if _target_reached(ports_at_step):
             break
