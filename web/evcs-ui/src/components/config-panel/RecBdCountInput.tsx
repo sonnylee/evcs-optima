@@ -10,7 +10,7 @@ export function RecBdCountInput({ value, onChange }: Props) {
   return (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-semibold text-slate-700">
-        REC BD Count (FR-10)
+        REC BD Count
       </label>
       <input
         type="number"

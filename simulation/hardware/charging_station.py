@@ -8,10 +8,9 @@ from simulation.log.relay_event_log import RelayEventLog
 class ChargingStation(SimulationModule):
     """Charging station shell — global container, no business logic.
 
-    Per SPEC §10, this shell does NOT own a global ``RelayMatrix`` or
-    ``ModuleAssignment``. Each ``RectifierBoard`` owns its own per-MCU
-    instance; cross-MCU consistency is enforced by the protocol layer
-    and verified by the boundary-consistency check (SPEC §9).
+    Per SPEC §10, owns no global ``RelayMatrix``/``ModuleAssignment``; each
+    ``RectifierBoard`` holds its own per-MCU instance. Cross-MCU consistency
+    comes from the protocol layer and the boundary check (SPEC §9).
     """
 
     def __init__(
@@ -61,10 +60,8 @@ class ChargingStation(SimulationModule):
     def bridge_relay_between(self, left_mcu: int):
         """Return the bridge relay between `left_mcu` and `left_mcu + 1`.
 
-        Note: after the SPEC §3 alignment flip, ownership lives on the right
-        side (`left_mcu + 1`). The argument keeps the legacy ``left_mcu`` name
-        for backward compatibility with all callers; only the lookup target
-        changed (``boards[right_mcu].left_bridge_relay``).
+        Per SPEC §3, ownership lives on the right side; arg keeps the legacy
+        ``left_mcu`` name, lookup targets ``boards[right_mcu].left_bridge_relay``.
         """
         if 0 <= left_mcu < len(self.boards):
             right_mcu = (left_mcu + 1) % len(self.boards)
@@ -90,10 +87,9 @@ class ChargingStation(SimulationModule):
     def validate(self) -> list[str]:
         """Aggregate per-MCU contiguity / single-owner violations.
 
-        Each board's ModuleAssignment now covers a 3-MCU window, so we
-        only inspect each board's *own* outputs (avoids double-counting
-        through neighbor mirrors). Multi-owner detection runs per group;
-        the canonical answer lives on the group's owning MCU board.
+        Inspects only each board's own outputs (its MA covers a 3-MCU window,
+        avoiding double-counting). Multi-owner detection runs per group on the
+        owning MCU board.
         """
         violations: list[str] = []
         ring = self.num_mcus >= 3

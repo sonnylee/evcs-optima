@@ -19,10 +19,9 @@ GROUP_CONFIGS = [2, 3, 3, 2]  # num SMRs per group (×25kW each)
 class RectifierBoard(SimulationModule):
     """Hardware abstraction for one MCU's rectifier board.
 
-    Per SPEC §10, each board owns its OWN ``RelayMatrix`` and
-    ``ModuleAssignment`` instance covering a 3-MCU window (left
-    neighbor + self + right neighbor). Cross-MCU effects propagate via
-    Borrow/Return protocol messages — never by sharing these instances.
+    Per SPEC §10, owns its own ``RelayMatrix`` and ``ModuleAssignment`` over a
+    3-MCU window (left + self + right). Cross-MCU effects propagate via
+    Borrow/Return messages, never by sharing these instances.
     """
 
     def __init__(
@@ -161,9 +160,8 @@ class RectifierBoard(SimulationModule):
     def initialize_relays(self, dt_index: int = 0) -> None:
         """Pre-close only inter-group relays on the anchor paths.
 
-        Output relays stay OPEN; they close only after the SPEC §11 per-Output
-        minimum-guarantee interval is formed when a vehicle arrives (default
-        config: 125 kW).
+        Output relays stay OPEN until the SPEC §11 per-Output minimum-guarantee
+        interval forms on vehicle arrival (default config: 125 kW).
         """
         # O0 anchor path: close R_01
         # O1 anchor path: close R_23

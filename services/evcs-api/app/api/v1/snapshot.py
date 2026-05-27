@@ -1,10 +1,8 @@
 """Snapshot routes — FR-02..05 + FR-09 live recompute.
 
-Phase 3 / F09.3: both routes are ``async def`` and ``await
-compute_snapshot_async`` directly, eliminating the ``asyncio.run()`` wrap
-the sync ``compute_snapshot`` would otherwise add. This avoids the
-nested-event-loop crash flagged in F09.1.5 / F09.2 and gives a single
-coroutine path through the rebuild-engine snapshot strategy.
+Both routes ``await compute_snapshot_async`` directly, giving a single
+coroutine path through the rebuild-engine snapshot strategy (no
+``asyncio.run()`` wrap, no nested-event-loop crash).
 """
 from __future__ import annotations
 

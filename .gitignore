@@ -4,3 +4,7 @@ __pycache__/
 .vscode/
 associate/verify/scenarios/
 associate/verify/interactive/
+.coverage
+*.tsbuildinfo
+package-lock.json
+associate/*.pdf

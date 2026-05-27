@@ -3,8 +3,7 @@ import type { RecBdSnapshot } from '../../types/evcs';
 
 interface Props {
   recBd: RecBdSnapshot;
-  /** Optional children (legacy callers); the new TopologyView renders the label
-   *  as a self-contained vertical block and places groups / cars beside it. */
+  /** Legacy callers wrap content; without children the label renders as a self-contained vertical block. */
   children?: ReactNode;
 }
 

@@ -154,10 +154,10 @@ def test_arrival_holds_output_open_until_125kw():
     assert seq.total_steps > 0
 
     closed_idx = next(
-        (i for i, s in enumerate(seq.steps) if "Close M1.O1" in s.description),
+        (i for i, s in enumerate(seq.steps) if "Close MCU1.OUTPUT1" in s.description),
         None,
     )
-    assert closed_idx is not None, "expected a 'Close M1.O1' step in the sequence"
+    assert closed_idx is not None, "expected a 'Close MCU1.OUTPUT1' step in the sequence"
 
     for i in range(closed_idx):
         relay = _output_relay(seq.steps[i].snapshot, 1)
@@ -191,10 +191,10 @@ def test_arrival_below_125kw_closes_output_once_floor_engaged():
     assert seq.total_steps > 0
 
     closed_idx = next(
-        (i for i, s in enumerate(seq.steps) if "Close M1.O1" in s.description),
+        (i for i, s in enumerate(seq.steps) if "Close MCU1.OUTPUT1" in s.description),
         None,
     )
-    assert closed_idx is not None, "expected a 'Close M1.O1' step in the sequence"
+    assert closed_idx is not None, "expected a 'Close MCU1.OUTPUT1' step in the sequence"
     for i in range(closed_idx):
         assert _output_relay(seq.steps[i].snapshot, 1).state == "Open"
     for i in range(closed_idx, len(seq.steps)):
@@ -255,11 +255,11 @@ def test_priority_drives_arrival_order():
     # Find first step in which each port reaches 125 kW (engagement signal).
     p3_engaged_idx = next(
         i for i, s in enumerate(seq.steps)
-        if "Close M2.O1" in s.description
+        if "Close MCU2.OUTPUT1" in s.description
     )
     p1_engaged_idx = next(
         i for i, s in enumerate(seq.steps)
-        if "Close M1.O1" in s.description
+        if "Close MCU1.OUTPUT1" in s.description
     )
     assert p3_engaged_idx < p1_engaged_idx
 

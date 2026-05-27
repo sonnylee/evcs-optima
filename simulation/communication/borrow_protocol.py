@@ -19,10 +19,9 @@ async def send_borrow_request(
 ) -> bool:
     """Send BorrowRequest to `neighbor` and await grant/deny.
 
-    On grant, the responder has already reserved `group_idx` for
-    `requester_output_idx` in the shared ModuleAssignment AND has resynced
-    its own inter-group / bridge relays at `step_index` (SPEC §11: relay
-    switching is owned exclusively by the local MCU).
+    On grant, the responder has reserved `group_idx` for
+    `requester_output_idx` and resynced its own relays at `step_index`
+    (SPEC §11).
     """
     if neighbor is None:
         return False

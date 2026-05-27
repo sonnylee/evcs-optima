@@ -1,15 +1,11 @@
 """Per-MCU ModuleAssignment — SPEC §5.2 + §10.
 
-Each MCU owns its own instance covering a fixed 3-MCU window (left
-neighbor + self + right neighbor). For ``num_mcus == 1`` the window
-collapses to just self (2 outputs × 4 groups).
+Each MCU owns an instance covering a 3-MCU window (left + self + right);
+``num_mcus == 1`` collapses to self only (2 outputs × 4 groups).
 
-All public methods accept and return **absolute** Output / Group indices;
-translation to the local 3-MCU window is internal. Indices outside the
-window are silently rejected (``assign_if_idle`` → ``False``,
-``get_owner`` → ``None``, etc.) — cross-MCU borrow/return is restricted
-to immediate neighbors per SPEC §11, so non-neighbor calls indicate a
-caller bug, not a missed mutation.
+Public methods take/return **absolute** indices and translate internally.
+Indices outside the window are silently rejected (``assign_if_idle`` →
+``False``, ``get_owner`` → ``None``, etc.).
 """
 
 from __future__ import annotations
@@ -48,16 +44,10 @@ class ModuleAssignment:
         self._init_constraints()
 
     def _init_constraints(self) -> None:
-        """Mark cells as -1 where the Output cannot reach the Group.
+        """Mark cells as -1 where the Output cannot reach the Group (SPEC §2.2).
 
-        Two cases (SPEC §2.2):
-          1. **Ghost slot** — in linear topology (``N == 2``) one side of
-             the 3-MCU window has no neighbor (``slot_to_mcu`` contains
-             ``None``). Every cell whose Output-slot or Group-slot is the
-             ghost slot is physically nonexistent → -1.
-          2. **Non-adjacent MCUs** — borrow is restricted to immediate
-             neighbors, so any (Output, Group) pair whose owning MCUs are
-             more than one hop apart in the global ring → -1.
+        Two cases: ghost slot (linear N==2 edge with no neighbor) and
+        non-adjacent MCUs (more than one ring hop apart).
         """
         if self.num_mcus <= 1:
             return  # everything reachable in single-MCU case
@@ -130,8 +120,8 @@ class ModuleAssignment:
 
     def assign_if_idle(self, abs_output_idx: int, abs_group_idx: int) -> bool:
         """Atomically claim `abs_group_idx` for `abs_output_idx` iff no other
-        in-window Output owns it. Returns True on successful claim. Returns
-        False (no mutation) if either index is outside the window."""
+        in-window Output owns it. Returns True on claim, False (no mutation)
+        otherwise or if either index is outside the window."""
         o = self.abs_to_local_output(abs_output_idx)
         g = self.abs_to_local_group(abs_group_idx)
         if o is None or g is None:
@@ -154,8 +144,8 @@ class ModuleAssignment:
         self._matrix[o][g] = 0
 
     def get_owner(self, abs_group_idx: int) -> int | None:
-        """Return the absolute Output index that owns this Group within
-        this MCU's window, or None if idle / not in window."""
+        """Return the absolute Output index owning this Group in-window, or
+        None if idle / not in window."""
         g = self.abs_to_local_group(abs_group_idx)
         if g is None:
             return None
@@ -172,9 +162,8 @@ class ModuleAssignment:
         return self._matrix[o][g] != -1
 
     def get_groups_for_output(self, abs_output_idx: int) -> list[int]:
-        """Return list of ABSOLUTE group indices currently held by this
-        Output within this MCU's window. Empty list if the output is
-        outside the window."""
+        """Return absolute group indices held by this Output in-window
+        (empty if the output is outside the window)."""
         o = self.abs_to_local_output(abs_output_idx)
         if o is None:
             return []

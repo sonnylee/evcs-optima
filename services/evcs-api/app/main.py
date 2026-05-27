@@ -1,6 +1,8 @@
 """FastAPI app factory — Phase 1 foundation (docs/SPEC-WEB-API.md §4 Phase 1)."""
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -27,9 +29,10 @@ def create_app() -> FastAPI:
         ),
     )
     # Dev UI is served by Bun (web/evcs-ui/) on a different origin.
+    allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").split(",")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allow_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -9,11 +9,9 @@ from app.constants import MAX_REQUIRED_MAX, MAX_REQUIRED_MIN
 
 
 class CarPortInput(BaseModel):
-    """Canonical (already-validated) per-port state.
+    """Canonical (already-validated) per-port state, clamped to [0, 600] and 25 kW-aligned.
 
-    Values must already be clamped to [0, 600] and aligned to 25 kW. Use
-    ``validation_service.normalize_car_port`` to accept raw user input and
-    produce a ``CarPortInput`` plus warnings.
+    Use ``validation_service.normalize_car_port`` to convert raw user input.
     """
 
     port_id: int = Field(..., ge=1, description="1-based Car Port id (1..2N).")
@@ -24,10 +22,7 @@ class CarPortInput(BaseModel):
 
 
 class RawCarPortInput(BaseModel):
-    """Untrusted input direct from the UI — values may be out of range or not 25 kW aligned.
-
-    Used by the validation endpoint; the normalizer clamps & rounds, emitting warnings.
-    """
+    """Untrusted UI input — may be out of range or not 25 kW-aligned; normalizer clamps & warns."""
 
     port_id: int = Field(..., ge=1)
     max_required: int

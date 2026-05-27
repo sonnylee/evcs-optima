@@ -79,7 +79,7 @@ def bridge_relay_ids(rec_bd_count: int) -> List[str]:
 def build_topology(system: SystemConfig, cycle: bool = True) -> TopologyPreview:
     """FR-01 + FR-10 + FR-11: derive the static layout (colors, packs, relay ids).
 
-    This is a pure function of the config — no car_ports, no allocation, no dynamic state.
+    Pure function of the config — no car_ports, allocation, or dynamic state.
     """
 
     palette = pick_palette(system.rec_bd_count, cycle=cycle)
