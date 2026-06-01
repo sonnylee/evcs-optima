@@ -29,7 +29,12 @@ def create_app() -> FastAPI:
         ),
     )
     # Dev UI is served by Bun (web/evcs-ui/) on a different origin.
-    allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").split(",")
+    allow_origins = [
+        o.strip()
+        for o in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").split(",")
+        if o.strip()
+    ]
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
