@@ -9,6 +9,7 @@ git checkout -b gitlab-sync
 echo "▶ Removing .md files from index..."
 git rm -r --cached **/*.md *.md 2>/dev/null || true
 git rm -r --cached .claude/ 2>/dev/null || true
+git checkout HEAD -- docs/README.md 2>/dev/null || true
 
 echo "▶ Committing..."
 git commit -m "chore: sync to GitLab (strip .md)" || echo "Nothing to commit"
