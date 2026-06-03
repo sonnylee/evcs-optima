@@ -1,0 +1,83 @@
+<svg viewBox="0 0 760 620" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 Z" fill="#3a6ea5"/></marker>
+    <marker id="arrGreen" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 Z" fill="#2f7d4f"/></marker>
+    <marker id="arrReuse" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 Z" fill="#7a5fb0"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="620" fill="#fbfbf9"/>
+
+  <text x="380" y="40" text-anchor="middle" font-size="20" font-weight="700" fill="#1c1c1c">High Level 軟體架構</text>
+
+  <!-- ================= TEST LAYER ================= -->
+  <rect x="50" y="66" width="660" height="320" rx="10" fill="#eef4fb" stroke="#3a6ea5" stroke-width="2"/>
+  <text x="72" y="90" font-size="13.5" font-weight="700" fill="#2c5582">測試層　tests/algo_validation/　(本次新增 · 不碰 production)</text>
+
+  <!-- main test -->
+  <rect x="72" y="102" width="616" height="46" rx="7" fill="#fff" stroke="#3a6ea5" stroke-width="1.6"/>
+  <text x="380" y="121" text-anchor="middle" font-size="12.5" font-weight="700" fill="#222">test_exploration.py　(主測試迴圈)</text>
+  <text x="380" y="138" text-anchor="middle" font-size="9.5" fill="#777">選 arrive → 跑 tick step() → 每 tick 驗 + 到穩態驗 → 記錄覆蓋</text>
+
+  <!-- 測試新建 -->
+  <text x="72" y="170" font-size="11" font-weight="700" fill="#2c5582">測試新建</text>
+
+  <rect x="72" y="178" width="148" height="62" rx="6" fill="#fff" stroke="#3a6ea5" stroke-width="1.5"/>
+  <text x="146" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#1c4a78">arrival_scheduler</text>
+  <text x="146" y="217" text-anchor="middle" font-size="8.8" fill="#777">覆蓋導向選車</text>
+  <text x="146" y="230" text-anchor="middle" font-size="8.8" fill="#777">(底層 API 注入)</text>
+
+  <rect x="230" y="178" width="148" height="62" rx="6" fill="#fff" stroke="#3a6ea5" stroke-width="1.5"/>
+  <text x="304" y="205" text-anchor="middle" font-size="11" font-weight="700" fill="#1c4a78">coverage_tracker</text>
+  <text x="304" y="223" text-anchor="middle" font-size="8.8" fill="#777">節點 /766</text>
+
+  <rect x="388" y="178" width="148" height="62" rx="6" fill="#fff" stroke="#3a6ea5" stroke-width="1.5"/>
+  <text x="462" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#1c4a78">tick_checks</text>
+  <text x="462" y="217" text-anchor="middle" font-size="8.8" fill="#777">逐-tick 軍</text>
+  <text x="462" y="230" text-anchor="middle" font-size="8.8" fill="#777">L3 + relay 順序</text>
+
+  <rect x="546" y="178" width="142" height="62" rx="6" fill="#fff" stroke="#3a6ea5" stroke-width="1.5"/>
+  <text x="617" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#1c4a78">steady_checks</text>
+  <text x="617" y="217" text-anchor="middle" font-size="8.8" fill="#777">穩態軍 L2 守恆</text>
+  <text x="617" y="230" text-anchor="middle" font-size="8.8" fill="#777">L4 relay 鏡像 + L4b</text>
+
+  <!-- reuse_adapters 單一複用入口 -->
+  <text x="72" y="270" font-size="11" font-weight="700" fill="#5a4080">複用入口（engine 既有設施，不重頭）</text>
+  <rect x="72" y="278" width="616" height="62" rx="7" fill="#f3eefb" stroke="#7a5fb0" stroke-width="1.8"/>
+  <text x="380" y="300" text-anchor="middle" font-size="12.5" font-weight="700" fill="#5a4080">reuse_adapters.py　(統一複用 engine 既有設施)</text>
+  <text x="380" y="319" text-anchor="middle" font-size="9.5" fill="#6a5090">validator.check（逐-tick + L4a ownership 鏡像）· ChargingStation.validate（L2 區間/ownership）</text>
+  <text x="380" y="334" text-anchor="middle" font-size="9.5" fill="#6a5090">· engine.snapshots / arrivals_log（trace + (O,L) 軍跡）</text>
+
+  <text x="380" y="364" text-anchor="middle" font-size="9" fill="#999">穩態軍：到穩態驗 L1/L2守恆/L4。｜逐-tick 軍：每 tick 驗 L3/L2 relay 順序。｜測試只讀不碰 production</text>
+
+  <!-- ================= SIMULATION CORE ================= -->
+  <rect x="50" y="416" width="660" height="170" rx="10" fill="#eaf5ec" stroke="#2f7d4f" stroke-width="2.2"/>
+  <text x="72" y="440" font-size="13.5" font-weight="700" fill="#236b40">Simulation 核心　simulation/　(既有 · 被測對象 · 不改)</text>
+
+  <rect x="72" y="454" width="300" height="70" rx="7" fill="#fff" stroke="#2f7d4f" stroke-width="1.6"/>
+  <text x="222" y="476" text-anchor="middle" font-size="11.5" font-weight="700" fill="#236b40">arrive 注入接口（底層 API）</text>
+  <text x="222" y="494" text-anchor="middle" font-size="9" fill="#777">output.connect_vehicle + handle_vehicle_arrival</text>
+  <text x="222" y="509" text-anchor="middle" font-size="9" fill="#777">+ append engine.vehicles</text>
+
+  <rect x="388" y="454" width="300" height="70" rx="7" fill="#fff" stroke="#2f7d4f" stroke-width="1.6"/>
+  <text x="538" y="476" text-anchor="middle" font-size="11.5" font-weight="700" fill="#236b40">演算法核心</text>
+  <text x="538" y="494" text-anchor="middle" font-size="9" fill="#777">功率分配 · relay · borrow/return</text>
+  <text x="538" y="509" text-anchor="middle" font-size="9" fill="#2f7d4f">soc≥target → 系統自發離場</text>
+
+  <rect x="72" y="534" width="616" height="42" rx="7" fill="#f3eefb" stroke="#7a5fb0" stroke-width="1.5"/>
+  <text x="380" y="553" text-anchor="middle" font-size="11" font-weight="700" fill="#5a4080">engine 內建驗證設施（reuse_adapters 複用）</text>
+  <text x="380" y="568" text-anchor="middle" font-size="8.8" fill="#9080a8">validator · ChargingStation.validate · snapshots · arrivals_log</text>
+
+  <!-- arrows -->
+  <path d="M 140 240 C 120 346, 140 406, 190 452" fill="none" stroke="#3a6ea5" stroke-width="2.2" marker-end="url(#arr)"/>
+  <text x="60" y="406" font-size="9.5" fill="#2c5582" font-weight="700">① arrive 主動</text>
+
+  <path d="M 270 452 C 255 406, 270 386, 260 242" fill="none" stroke="#2f7d4f" stroke-width="1.9" stroke-dasharray="6 3" marker-end="url(#arrGreen)"/>
+  <text x="278" y="406" font-size="9.5" fill="#2f7d4f" font-weight="700">② depart 被動觀察</text>
+
+  <path d="M 470 532 C 470 446, 470 396, 470 342" fill="none" stroke="#7a5fb0" stroke-width="1.8" stroke-dasharray="5 3" marker-end="url(#arrReuse)"/>
+  <text x="478" y="406" font-size="9.5" fill="#5a4080" font-weight="700">③ 複用 validator/snapshots</text>
+
+  <!-- banner -->
+  <rect x="50" y="596" width="660" height="22" rx="6" fill="#fff7e6" stroke="#d8b24a" stroke-width="1.2"/>
+  <text x="380" y="611" text-anchor="middle" font-size="10.5" fill="#7a5d00">關鍵：測試新建小量 + reuse_adapters 複用 engine 既有；Simulation/production 零修改</text>
+</svg>
