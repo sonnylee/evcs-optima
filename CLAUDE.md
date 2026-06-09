@@ -23,7 +23,7 @@ The authoritative specification is `SPEC.md` (Traditional Chinese). Read it firs
 
 **Baseline** (must hold across any change unless explicitly updated):
 - `services/evcs-api/tests`: **92 passed, 1 xfailed, 2 deselected**
-- `tests/` (simulation/): **241 passed**
+- `tests/` (simulation/): **247 passed**
 - `web/evcs-ui` `npx tsc --noEmit`: **0 errors**
 
 Central Sprint 2 status + vocabulary canonical: `outputs/SPRINT2_FINAL_STATUS.md`.

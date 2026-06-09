@@ -887,11 +887,26 @@ class MCUControl(Actor, SimulationModule):
         """Toggle relays owned by this MCU to match union of output requirements."""
         needed: set[Relay] = set()
         for state in self._output_states:
-            if state.interval_min is not None:
-                needed.update(self._compute_required_relays(
-                    state.output_local_idx, state.interval_min, state.interval_max,
-                    include_output=include_output,
-                ))
+            if state.interval_min is None:
+                continue
+            # C1.5b: an output mid-departure has had its inter-group / bridge
+            # relays opened by `_open_departure_intergroup_relays`, but its
+            # interval is not cleared until `_finalize_departure` one phase-tick
+            # later. Counting that stale interval here would re-close the relays
+            # the departure just opened (the step-1113 teardown race), orphaning
+            # them once the MA is cleared. Departure is the ONLY writer of these
+            # two flags (initiate_vehicle_departure → _advance_relay_phases), so
+            # skipping on them never affects arrival or steady-state resyncs.
+            # Regression: test_relay_phase_teardown.py.
+            if (
+                state.pending_intergroup_open != 0
+                or state.pending_output_relay_open != 0
+            ):
+                continue
+            needed.update(self._compute_required_relays(
+                state.output_local_idx, state.interval_min, state.interval_max,
+                include_output=include_output,
+            ))
         # Cross-MCU borrows: include relays owned by this MCU that are needed
         # by foreign outputs whose intervals extend into our territory. Use
         # each foreign output's virtual span so ring-wrapped intervals aren't

@@ -158,12 +158,18 @@ inter-group-before-output is already enforced by the 3-phase machine *before*
 recomputes `needed` from the lender's *current* ownership, so it only opens
 relays no longer needed by anyone (idempotent), never closes-then-opens.
 
+> **C1.5b correction:** claim (2) holds for the *lender's foreign* resync, but
+> the broader "`_apply_global_relay_state` is confirmed correct — do not touch"
+> premise was **incomplete** for the *departing output's own local* relays. See
+> the **Phase B / C1.5b addendum** at the end of this report.
+
 ### DP-3 — Boundary sanity (all correct under α)
 
 1. **One lender, multiple borrowers, partial departure:**
    `_apply_global_relay_state`'s `foreign_seen` loop (845-863) recomputes
    `needed` over *all* current foreign owners, so resync keeps relays still
-   needed by the remaining borrower. ✓
+   needed by the remaining borrower. ✓ *(C1.5b: correct for foreign owners;
+   the gap was the departing output's own interval — see addendum.)*
 2. **Lender's own output departs while also lending:**
    `_open_departure_intergroup_relays` preserves `still_needed` incl. foreign
    spans (618-636) → won't yank a relay a foreign borrower still needs. ✓
@@ -206,3 +212,50 @@ during `_finalize_departure` and awaiting their notifies from the async
 ---
 
 **STOP — awaiting review of DP-1…DP-4 before any Phase B implementation.**
+
+---
+
+## Phase B / C1.5b addendum — `_apply_global_relay_state` teardown race
+
+**Premise correction.** C1 (commit `7ac4599`) implemented DP-1/DP-2 exactly as
+specced — the departing borrower now notifies the lender, which resyncs its own
+relays. That resolved the *foreign*-departure orphan (the A1 first-failure moved
+from step 847 to a later step) but did **not** turn the A1 / F1 gate green. The
+C1 handoff's "`_mirror_release` / `_handle_return_notify` / `_sync_foreign_relays`
+/ `_apply_global_relay_state` are confirmed correct — do not touch" guidance was
+**incomplete**: `_apply_global_relay_state` carries an independent **teardown
+race** that C1 could not reach.
+
+**The race (step-1113 trace).** During a departure:
+
+1. `_open_departure_intergroup_relays` *opens* the departing output's inter-group
+   / bridge relays (correct).
+2. The output's `interval` is **not** cleared until `_finalize_departure`, one
+   phase-tick later (`pending_output_relay_open` is still non-zero in between).
+3. Any `_apply_global_relay_state` call in that window — fired by the sibling
+   output's borrow/return, a foreign sync, or an arrival on the same MCU —
+   re-reads the stale interval and **re-closes** the relays step 1 just opened.
+4. `_finalize_departure` then clears the MA → the relays are orphaned-CLOSED
+   (group owned by nobody, relay still CLOSED). This is the exact A1 violation
+   `M2.R0 CLOSED but g8,g9 not co-owned`.
+
+**Fix (C1.5b).** In `_apply_global_relay_state`'s per-output `needed` loop, skip
+any output that is mid-departure:
+
+```python
+if state.pending_intergroup_open != 0 or state.pending_output_relay_open != 0:
+    continue
+```
+
+**Safety.** Verified that departure is the *only* writer of these two flags:
+`initiate_vehicle_departure` (the sole entry, called only from
+`SimulationEngine._trigger_departures`) sets `pending_intergroup_open = 1`; every
+other non-zero write is `_advance_relay_phases` advancing that same departure
+sequence. Arrival uses the separate `pending_*_close` flags. So the guard never
+suppresses arrival or steady-state resyncs.
+
+**Regression.** `tests/integration/test_relay_phase_teardown.py::`
+`test_apply_global_relay_state_skips_departing_outputs` reproduces the race
+directly (single MCU: open → concurrent resync → relays must stay OPEN) — RED
+without the guard, GREEN with it, independent of the A1 gate. With the guard the
+A1 / F1 exploration gate is GREEN and `pytest tests/` is 247 passed.
