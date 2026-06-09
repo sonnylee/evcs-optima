@@ -18,7 +18,9 @@ last arrival's bucket".
 """
 from __future__ import annotations
 
-from typing import Optional
+import json
+import os
+from typing import Any, Optional
 
 _SOC_LEVELS = ("low", "mid", "high")
 _NODE_TOTAL = 766
@@ -160,3 +162,34 @@ class CoverageTracker:
             "distinct_edges": len(self.edges),
             "unvisited_top20": self._unvisited_top(20),
         }
+
+    # ── Cross-seed union dump (S5) ────────────────────────────────────────
+
+    def dump_to_json(self, path: str, metadata: dict[str, Any]) -> None:
+        """Write the visited (O, L) set + ``metadata`` as evcs-visited-v1 JSON.
+
+        ``visited`` is a list of ``[occupancy_int, L_str]`` sorted by
+        ``(occupancy, L_str)`` for diff-friendliness; the ⊥ empty-station L
+        (stored internally as ``None``) serialises as the string ``"⊥"`` and
+        round-trips back through ``union_coverage.py``. The parent directory is
+        created if missing. Best-effort: a write failure prints a warning but
+        never raises — a broken dump must not fail the test itself.
+        """
+        visited = sorted(
+            [occ, (L if L is not None else "⊥")]
+            for (occ, L) in self.visited_nodes
+        )
+        payload = {
+            "schema": "evcs-visited-v1",
+            "metadata": metadata,
+            "universe_size": _NODE_TOTAL,
+            "visited": visited,
+        }
+        try:
+            dirname = os.path.dirname(path)
+            if dirname:
+                os.makedirs(dirname, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except OSError as exc:  # pragma: no cover - defensive, must not raise
+            print(f"  [WARN] dump_to_json failed for {path!r}: {exc}")

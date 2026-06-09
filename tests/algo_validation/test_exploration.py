@@ -23,6 +23,8 @@ stagnation terminator. The reduction is logged in the report (no silent cap).
 """
 from __future__ import annotations
 
+import os
+
 from simulation.environment.simulation_engine import SimulationEngine
 from tests.algo_validation.conftest import EPSILON, SEED
 from tests.algo_validation.helpers.arrive_inject import inject_arrive
@@ -121,6 +123,26 @@ async def test_exploration(empty_engine: SimulationEngine, scheduler, tracker: C
     assert checks.anchor_open_while_charging_ticks > 0, (
         "no dynamic anchor inter-group open observed while charging — "
         "inter-group / A1 checks would be vacuous; lower demand further")
+
+    # S5: optionally dump the visited (O,L) set for cross-seed union analysis
+    # (union_coverage.py). Unset env var → no dump → behaviour identical to S4.
+    if dump_path := os.environ.get("EVCS_DUMP_VISITED"):
+        tc = engine.time_controller
+        # Mirror _print_report's termination reason (single source: the same
+        # expression) — recomputed here only because the dump runs after it.
+        termination = (
+            "max_steps" if tc.step_index >= _MAX_STEPS else
+            "coverage>=60%" if tracker.node_fraction() >= _COVERAGE_TARGET else
+            "stagnation>=500"
+        )
+        tracker.dump_to_json(dump_path, metadata={
+            "seed": SEED,
+            "epsilon": EPSILON,
+            "max_steps": _MAX_STEPS,
+            "steps_run": tc.step_index,
+            "termination": termination,
+            "relay_events": len(engine.event_log),
+        })
 
 
 def _print_report(engine: SimulationEngine, tracker: CoverageTracker, checks: TickChecks) -> None:
