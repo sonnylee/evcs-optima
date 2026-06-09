@@ -24,7 +24,7 @@ stagnation terminator. The reduction is logged in the report (no silent cap).
 from __future__ import annotations
 
 from simulation.environment.simulation_engine import SimulationEngine
-from tests.algo_validation.conftest import SEED
+from tests.algo_validation.conftest import EPSILON, SEED
 from tests.algo_validation.helpers.arrive_inject import inject_arrive
 from tests.algo_validation.helpers.async_driver import ExplorationDriver
 from tests.algo_validation.helpers.coverage_tracker import CoverageTracker
@@ -136,7 +136,7 @@ def _print_report(engine: SimulationEngine, tracker: CoverageTracker, checks: Ti
         "=== STEP S2.X v4 EXPLORATION REPORT (F1) ===",
         "",
         "[Run]",
-        f"- steps={tc.step_index} sim_time={tc.current_time:.0f}s seed={SEED}",
+        f"- steps={tc.step_index} sim_time={tc.current_time:.0f}s seed={SEED} epsilon={EPSILON}",
         f"- termination={reason} (CI budget _MAX_STEPS={_MAX_STEPS}; "
         f"spec target={_SPEC_STEP_TARGET})",
         f"- relay_events={len(engine.event_log)}",

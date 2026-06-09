@@ -28,13 +28,47 @@ class Arrive:
 
 
 class ArrivalScheduler:
-    def __init__(self, num_outputs: int = 8, seed: int = 12345, idle_every: int = 5) -> None:
+    def __init__(
+        self,
+        num_outputs: int = 8,
+        seed: int = 12345,
+        idle_every: int = 5,
+        epsilon: float = 0.0,
+    ) -> None:
         self.num_outputs = num_outputs
         self.idle_every = idle_every
+        # S4: ε-greedy exploration rate. 0.0 = pure greedy (default); the
+        # short-circuit in ``choose`` keeps the greedy path byte-identical.
+        self.epsilon = epsilon
         self._rng = random.Random(seed)
         self._since_idle = 0
 
+    def _random_legal_arrival(self, occupancy: int) -> Optional[Arrive]:
+        """A uniformly random legal arrival (S4 ε-greedy branch).
+
+        Picks an unoccupied output and a random SOC bucket — the scheduler's
+        full choice space (``Arrive`` is (output, soc); demand/``max_kw`` is set
+        downstream by the harness, not here, and is not part of the coverage
+        node key). Returns ``None`` when the station is full so the caller falls
+        back to the greedy path.
+        """
+        empty = [i for i in range(self.num_outputs) if not (occupancy >> i) & 1]
+        if not empty:
+            return None
+        return Arrive(self._rng.choice(empty), self._rng.choice(_SOC_LEVELS))
+
     def choose(self, occupancy: int, tracker) -> Optional[Arrive]:
+        # S4 ε-greedy: with probability ε pick a random legal arrival to break
+        # out of greedy local optima (stagnation). The ``self.epsilon > 0.0``
+        # guard short-circuits BEFORE any ``self._rng`` draw, so when ε=0.0 the
+        # RNG stream — and the greedy path below — is byte-identical to pre-S4.
+        # A random branch that finds no legal arrival (full station) falls
+        # through to the greedy path, which handles it.
+        if self.epsilon > 0.0 and self._rng.random() < self.epsilon:
+            result = self._random_legal_arrival(occupancy)
+            if result is not None:
+                return result
+
         empty = [i for i in range(self.num_outputs) if not (occupancy >> i) & 1]
         if not empty:
             return None  # station full → idle, wait for a departure
