@@ -122,6 +122,13 @@ class MCUControl(Actor, SimulationModule):
         self.left_neighbor: MCUControl | None = None
         self.right_neighbor: MCUControl | None = None
 
+        # Departure-time cross-MCU release notifications (SPIKE-XMCU-REPORT
+        # Phase A, DP-1/DP-2). `_finalize_departure` runs in the synchronous
+        # relay-phase path; it cannot `await send_return_notify`, so it queues
+        # (lender_mcu_id, group_phys) pairs here. `_handle_tick` drains them
+        # after the per-output loop so the lender resyncs its own MA + relays.
+        self._pending_foreign_release_notifies: list[tuple[int, int]] = []
+
         self._output_states: list[OutputPowerState] = []
         for i in range(OUTPUTS_PER_MCU):
             anchor_global = self._local_to_global(ANCHOR_GROUP_LOCAL_IDX[i])
@@ -190,6 +197,10 @@ class MCUControl(Actor, SimulationModule):
                 if self._tick_return_condition(state, output, pre_available):
                     await self._try_return_async(state)
                     state.return_counter = 0
+            # SPEC §11 / DP-2: a departure that ran inside _advance_relay_phases
+            # this tick may have queued cross-MCU release notices. Flush them
+            # now (in async context) so each lender resyncs its own relays.
+            await self._drain_pending_foreign_release_notifies()
         finally:
             tick.done.set()
 
@@ -660,9 +671,27 @@ class MCUControl(Actor, SimulationModule):
         if state.interval_min is not None:
             for g_virt in range(state.interval_min, state.interval_max + 1):
                 g_phys = self._wrap(g_virt)
-                if self._ma.get_owner(g_phys) == output_idx:
-                    self._ma.release(output_idx, g_phys)
+                if self._ma.get_owner(g_phys) != output_idx:
+                    continue
+                self._ma.release(output_idx, g_phys)
+                if self._is_local_group(g_phys):
+                    # Local cell: clear neighbour MA mirrors too. Local anchor
+                    # groups are mirrored on arrival (handle_vehicle_arrival →
+                    # _mirror_assign), so the release must propagate the same
+                    # way; this is unchanged from the historical behaviour.
                     self._mirror_release(output_idx, g_phys)
+                else:
+                    # Foreign (borrowed) cell: `_mirror_release` only clears MA
+                    # mirrors — it leaves the LENDER's inter-group / bridge
+                    # relays stuck CLOSED (SPIKE-XMCU-REPORT Phase A, DP-1).
+                    # Defer a ReturnNotify so the owning MCU clears its own
+                    # authoritative MA AND resyncs its relays (SPEC §11: only
+                    # the owning MCU switches its relays). Drained in
+                    # `_handle_tick` after the per-output loop.
+                    owner_mcu_id = g_phys // GROUPS_PER_MCU
+                    self._pending_foreign_release_notifies.append(
+                        (owner_mcu_id, g_phys)
+                    )
 
         state.interval_min = None
         state.interval_max = None
@@ -672,6 +701,31 @@ class MCUControl(Actor, SimulationModule):
 
         self._board.outputs[output_local_idx].disconnect_vehicle()
         self._sync_output(output_local_idx)
+
+    async def _drain_pending_foreign_release_notifies(self) -> None:
+        """Flush departure-time cross-MCU release notices (DP-2).
+
+        Each entry tells a lender MCU to release a group we returned on
+        departure and resync its own relays (`_handle_return_notify`). Runs in
+        the async tick context so it can `await send_return_notify`.
+        """
+        while self._pending_foreign_release_notifies:
+            lender_mcu_id, g_phys = self._pending_foreign_release_notifies.pop(0)
+            neighbor = self._neighbor_by_mcu_id(lender_mcu_id)
+            if neighbor is None:
+                # Defensive: cross-MCU borrow is restricted to immediate
+                # neighbours (SPEC §2.2), so the lender is always adjacent.
+                # Reaching here means an upstream invariant broke; warn and
+                # drop rather than crash production.
+                print(
+                    f"  [WARN] step {self._step_index}: MCU{self._mcu_id} "
+                    f"departure could not notify lender MCU{lender_mcu_id} for "
+                    f"G{g_phys} (not an immediate neighbour)"
+                )
+                continue
+            await send_return_notify(
+                neighbor, self._mcu_id, g_phys, self._step_index,
+            )
 
     # ── Force return ─────────────────────────────────────────────────
 
