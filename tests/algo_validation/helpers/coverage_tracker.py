@@ -37,6 +37,13 @@ class CoverageTracker:
         self._last_L: Optional[str] = None
         # Coverage state.
         self.visited_nodes: set[tuple[int, Optional[str]]] = set()
+        # Ordered visit trajectory (always recorded; cheap). Each entry is
+        # ``[step_index, occ, L]`` where ``(occ, L)`` is the *same* key written
+        # to ``visited_nodes`` this call (⊥ → "⊥", reusing the dump encoding).
+        # Unconditional append (revisits included) → the true ordered path, and
+        # ``{(o, None if L == "⊥" else L) for _, o, L in _trajectory} ==
+        # visited_nodes`` holds exactly.
+        self._trajectory: list[list] = []
         self.visited_classes: set[int] = set()
         self.edges: dict[tuple, int] = {}
         self._prev_key: Optional[tuple[int, Optional[str]]] = None
@@ -69,6 +76,9 @@ class CoverageTracker:
         if key not in self.visited_nodes:
             self.visited_nodes.add(key)
             self.last_new_node_step = step_index
+        # Same side as visited_nodes.add (after its guard), unconditional so
+        # revisits are kept; same key, ⊥ serialised exactly as the dump does.
+        self._trajectory.append([step_index, key[0], key[1] if key[1] is not None else "⊥"])
         if occupancy != 0:
             self.visited_classes.add(self._canonical(occupancy))
         if self._prev_key is not None and self._prev_key != key:
@@ -165,7 +175,9 @@ class CoverageTracker:
 
     # ── Cross-seed union dump (S5) ────────────────────────────────────────
 
-    def dump_to_json(self, path: str, metadata: dict[str, Any]) -> None:
+    def dump_to_json(
+        self, path: str, metadata: dict[str, Any], include_trajectory: bool = False,
+    ) -> None:
         """Write the visited (O, L) set + ``metadata`` as evcs-visited-v1 JSON.
 
         ``visited`` is a list of ``[occupancy_int, L_str]`` sorted by
@@ -174,6 +186,18 @@ class CoverageTracker:
         round-trips back through ``union_coverage.py``. The parent directory is
         created if missing. Best-effort: a write failure prints a warning but
         never raises — a broken dump must not fail the test itself.
+
+        **Ordered trajectory (opt-in).** When ``include_trajectory`` is true *or*
+        the ``EVCS_DUMP_TRAJECTORY`` env var is truthy, an extra ``trajectory``
+        key (schema ``evcs-trajectory-v1``) is appended after ``visited``; the
+        ``visited`` value is byte-for-byte unchanged and, with neither opt-in,
+        the whole dump is byte-identical to the pre-trajectory output.
+
+        This dump rides along with the existing visited dump (one file), so in
+        the harness it needs *both* env vars: ``EVCS_DUMP_VISITED`` triggers the
+        file at all (``test_exploration.py``), and ``EVCS_DUMP_TRAJECTORY`` adds
+        the trajectory key inside it. Setting only ``EVCS_DUMP_TRAJECTORY``
+        produces no file — the dump trigger point is not touched here.
         """
         visited = sorted(
             [occ, (L if L is not None else "⊥")]
@@ -185,6 +209,12 @@ class CoverageTracker:
             "universe_size": _NODE_TOTAL,
             "visited": visited,
         }
+        if include_trajectory or os.environ.get("EVCS_DUMP_TRAJECTORY"):
+            payload["trajectory"] = {
+                "schema": "evcs-trajectory-v1",
+                "fields": ["step", "occ", "L"],
+                "records": self._trajectory,
+            }
         try:
             dirname = os.path.dirname(path)
             if dirname:
