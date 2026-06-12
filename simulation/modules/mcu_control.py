@@ -1115,6 +1115,19 @@ class MCUControl(Actor, SimulationModule):
         s = mcu._output_states[owner_local]
         if not s.has_interval:
             return None
+        # Phase B teardown race (docs/algo_validation/SPIKE_A1_BRIDGE_SEED1.md):
+        # a foreign output mid-departure has already had its inter-group / bridge
+        # relays opened by `_open_departure_intergroup_relays`, but its interval
+        # and MA ownership are not cleared until `_finalize_departure` one
+        # phase-tick later. A lender re-syncing inside that window (e.g. driven
+        # by its own return) would otherwise count this stale interval and
+        # re-CLOSE the boundary bridge the departure just opened, orphaning it
+        # once the MA clears (seed-1 step-3094 re-close → step-3099 A1 fire).
+        # Skip it — symmetric to the local-interval guard in
+        # `_apply_global_relay_state`. Normal borrow-in (no pending open) is
+        # unaffected, so the bridge still CLOSEs on a live cross-MCU borrow.
+        if s.pending_intergroup_open != 0 or s.pending_output_relay_open != 0:
+            return None
         return (s.interval_min, s.interval_max)
 
     def _neighbor_by_mcu_id(self, mcu_id: int) -> MCUControl | None:
