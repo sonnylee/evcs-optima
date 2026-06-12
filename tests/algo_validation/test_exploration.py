@@ -37,10 +37,10 @@ from tests.algo_validation.helpers.tick_checks import TickChecks
 
 # Termination (spec §3.4). _MAX_STEPS is the CI budget; the spec target is
 # 86,400 (24 h). _COVERAGE_TARGET / _STAGNATION are the spec values.
-_MAX_STEPS = 4000
+_MAX_STEPS = int(os.environ.get('EVCS_MAX_STEPS', '4000'))
 _SPEC_STEP_TARGET = 86_400
-_COVERAGE_TARGET = 0.60
-_STAGNATION = 500
+_COVERAGE_TARGET = float(os.environ.get('EVCS_COVERAGE_TARGET', '0.60'))
+_STAGNATION = int(os.environ.get('EVCS_STAGNATION', '500'))
 _SETTLE_BUDGET = 40  # max ticks to wait for quiescence after each arrival
 # Small battery so injected EVs complete (and the system spontaneously departs
 # them) within the budget — otherwise the station fills and idles.
