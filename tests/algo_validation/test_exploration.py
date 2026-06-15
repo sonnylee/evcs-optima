@@ -169,29 +169,11 @@ def _print_report(engine: SimulationEngine, tracker: CoverageTracker, checks: Ti
         "[Per-tick army]  all PASS (assert-in-place)",
         "- L3 I1..I6 + B1(arrival inter-group-before-output) + B2(departure open last)",
         "",
-        "[F1-b dynamic-open evidence (N)]",
-        f"- anchor inter-group relay opened while charging: "
-        f"{checks.anchor_open_while_charging_ticks} ticks across "
-        f"{len(checks.anchor_open_states)} occupancy-states",
-        "",
         "[Node coverage (observational, /766)]",
         f"- visited={cov['nodes_visited']}/{cov['nodes_total']} "
         f"({cov['node_fraction']*100:.1f}%)",
         f"- L_distribution={cov['L_distribution']}",
         f"- N_distribution={cov['N_distribution']}",
-        "",
-        "[Vehicle classes (diagnostic, /70)]",
-        f"- visited={cov['vehicle_classes_visited']}/{cov['vehicle_classes_total']}",
-        "[Edges (diagnostic)]",
-        f"- recorded={cov['edges_recorded']} distinct={cov['distinct_edges']}",
-        "",
-        "[Unvisited top-20 (O,L) — Hamming + behavioural guess]",
-    ]
-    for u in cov["unvisited_top20"]:
-        lines.append(
-            f"- O={u['occupancy_bits']} L={u['node'][1]} "
-            f"hamming={u['hamming_to_visited']} :: {u['guess']}")
-    lines += [
         "",
         "[Reuse vs new]",
         "- reuse: validator.check/_diff_pair / ChargingStation.validate / "
@@ -201,13 +183,6 @@ def _print_report(engine: SimulationEngine, tracker: CoverageTracker, checks: Ti
         "- import web: NO / change production: NO / "
         "TrafficSimulator inject: NO / export_csv: NO",
         "",
-        "[Notes]",
-        "- decision 2 withdrawn: inter-group relays re-included in L2 via A1 "
-        "(relay↔ownership state-consistency) + B1 (full required set before "
-        "output close). L2-C reversibility removed (unsound — departure opens "
-        "R_01/R_23). I2 min-guarantee moved to the close transition (it gates "
-        "closing, not staying closed).",
-        "- I6 mid-charge latch (decision 1) unchanged.",
         "=== END REPORT ===",
         "",
     ]
