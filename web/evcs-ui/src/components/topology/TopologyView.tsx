@@ -97,6 +97,8 @@ function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdR
   const lastGroupRef = useRef<HTMLDivElement>(null); // G4
   const o1Ref = useRef<HTMLDivElement>(null);
   const o2Ref = useRef<HTMLDivElement>(null);
+  const car1Ref = useRef<HTMLDivElement>(null);
+  const car2Ref = useRef<HTMLDivElement>(null);
   const [connectors, setConnectors] = useState<{ d: string; closed: boolean }[]>([]);
 
   const o1Closed = outputForPort(cars[0]?.port_id ?? -1)?.state === 'Closed';
@@ -109,22 +111,38 @@ function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdR
 
     const compute = () => {
       const rb = row.getBoundingClientRect();
-      const seg = (
+      // Build every segment for one output's delivery path
+      // (group → output elbow, then output → car straight) so all segments
+      // share one SVG stroke and render at identical thickness / dash / colour.
+      const segmentsFor = (
         groupEl: HTMLDivElement | null,
         outEl: HTMLDivElement | null,
+        carEl: HTMLDivElement | null,
         closed: boolean,
-      ) => {
-        if (!groupEl || !outEl) return null;
-        const g = groupEl.getBoundingClientRect();
+      ): { d: string; closed: boolean }[] => {
+        if (!outEl) return [];
         const o = outEl.getBoundingClientRect();
-        const start: Pt = { x: g.right - rb.left, y: g.top + g.height / 2 - rb.top };
-        const end: Pt = { x: o.left - rb.left, y: o.top + o.height / 2 - rb.top };
-        return { d: elbowPath(start, end), closed };
+        const oLeftMid: Pt = { x: o.left - rb.left, y: o.top + o.height / 2 - rb.top };
+        const oRightMid: Pt = { x: o.right - rb.left, y: o.top + o.height / 2 - rb.top };
+        const segs: { d: string; closed: boolean }[] = [];
+        if (groupEl) {
+          const g = groupEl.getBoundingClientRect();
+          const gRightMid: Pt = { x: g.right - rb.left, y: g.top + g.height / 2 - rb.top };
+          segs.push({ d: elbowPath(gRightMid, oLeftMid), closed });
+        }
+        if (carEl) {
+          const c = carEl.getBoundingClientRect();
+          const cLeftMid: Pt = { x: c.left - rb.left, y: c.top + c.height / 2 - rb.top };
+          // output centre and car centre share the row centre → straight run,
+          // but route through the car's actual mid-y to stay robust to layout.
+          segs.push({ d: `M ${oRightMid.x} ${oRightMid.y} H ${cLeftMid.x} V ${cLeftMid.y}`, closed });
+        }
+        return segs;
       };
       const next = [
-        seg(firstGroupRef.current, o1Ref.current, o1Closed),
-        seg(lastGroupRef.current, o2Ref.current, o2Closed),
-      ].filter((s): s is { d: string; closed: boolean } => s !== null);
+        ...segmentsFor(firstGroupRef.current, o1Ref.current, car1Ref.current, o1Closed),
+        ...segmentsFor(lastGroupRef.current, o2Ref.current, car2Ref.current, o2Closed),
+      ];
       setConnectors(next);
     };
 
@@ -211,8 +229,11 @@ function RecBdRow({ recBd, packs, outputRelays, interGroupRelays, cars }: RecBdR
                   <RelayIcon relay={out} />
                 </div>
               )}
-              <span className="w-10 border-t border-dashed border-slate-300" />
-              <CarIcon car={car} />
+              {/* Invisible spacer reserves room for the output→car connector. */}
+              <span className="w-10" />
+              <div ref={carIdx === 0 ? car1Ref : carIdx === 1 ? car2Ref : undefined}>
+                <CarIcon car={car} />
+              </div>
             </div>
           );
         })}
