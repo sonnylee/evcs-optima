@@ -666,3 +666,157 @@ def test_dual_port_per_bd_stitched_final_matches_engine_final():
     assert any("Port 2" in s.description for s in steps), (
         f"no step attributed to Port 2; descriptions = {[s.description for s in steps]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C2 — per-relay stitched snapshot regression (anti-jump)
+#
+# Fixture is the bug report's worked example: Pri1 100→300, Pri2 300→100,
+# Pri3 100→200, with port_id == priority. Before the fix every sub-step of a
+# multi-relay transition carried the settled end-state (the picture jumped to
+# the combined total at the first sub-step). Numeric expectations below are the
+# engine-derived Phase A (A4) harness values, not hand-constants. Ports are
+# referenced by port_id only — no relay ids / group / REC-BD indices in the
+# correctness assertions (T1–T4).
+# ---------------------------------------------------------------------------
+
+def _worked_example_ports() -> List[CarPortInput]:
+    return _ports_full(
+        4,
+        {
+            1: {"max_required": 300, "present": 100, "target": 300, "priority": 1},
+            2: {"max_required": 100, "present": 300, "target": 100, "priority": 2},
+            3: {"max_required": 200, "present": 100, "target": 200, "priority": 3},
+        },
+    )
+
+
+async def _plan_worked_example():
+    """Build present/target anchors and plan the transition (mirrors the real
+    FR-14 path; plan_transition rebuilds engines internally)."""
+    from app.services.web_session_engine import WebSessionEngine
+
+    sys = _system(4)
+    ports = _worked_example_ports()
+    present_ports = [cp.model_copy(update={"max_required": cp.present}) for cp in ports]
+    target_ports = [cp.model_copy(update={"max_required": cp.target}) for cp in ports]
+    initial = (await WebSessionEngine.create(sys, present_ports)).to_visual_snapshot()
+    final = (await WebSessionEngine.create(sys, target_ports)).to_visual_snapshot()
+    steps = await step_planner.plan_transition(sys, ports, initial, final)
+    return sys, ports, initial, final, steps
+
+
+def _struct_key(snap):
+    """Structural identity of a snapshot: relay states, pack owners, per-car
+    allocation, total power. Used for boundary equality (mirrors A3)."""
+    return (
+        frozenset((r.id, r.state) for r in snap.relays),
+        frozenset((p.rec_bd_id, p.pack_index, p.owner_port_id) for p in snap.packs),
+        frozenset((c.port_id, c.allocated_kw) for c in snap.cars),
+        snap.total_power_kw,
+    )
+
+
+def test_c2_t1_intermediate_total_precedes_final_no_jump():
+    """T1 (bug guard): the 375→500 transition surfaces its intermediate total
+    (425, Port 1 +50 only) strictly before 500. Under the bug both read 500."""
+    _, _, _, _, steps = asyncio.run(_plan_worked_example())
+    totals = [s.snapshot.total_power_kw for s in steps]
+    assert 425 in totals, f"expected intermediate 425 kW; got {totals}"
+    assert 500 in totals, f"expected 500 kW; got {totals}"
+    assert totals.index(425) < totals.index(500), (
+        f"intermediate 425 must precede 500 (anti-jump); got {totals}"
+    )
+    # At 425 kW, only Port 1 has advanced (175); Port 3 still at its floor (125).
+    s425 = next(s for s in steps if s.snapshot.total_power_kw == 425)
+    alloc = {c.port_id: c.allocated_kw for c in s425.snapshot.cars}
+    assert alloc[1] == 175 and alloc[3] == 125, (
+        f"at 425 kW Port 1 should be 175 and Port 3 still 125; got "
+        f"{{1: {alloc[1]}, 3: {alloc[3]}}}"
+    )
+
+
+def test_c2_t2_last_step_matches_final_and_per_transition_settled():
+    """T2 (boundary correctness): the last emitted step equals the final
+    settled state, and every transition's settled snapshot appears as one
+    emitted step (its last sub-step, all flips applied — the A3 invariant)."""
+    sys, ports, _, final, steps = asyncio.run(_plan_worked_example())
+    assert _struct_key(steps[-1].snapshot) == _struct_key(final), (
+        "last step must equal the final settled state"
+    )
+    raw = asyncio.run(step_planner._generate_progressive_snapshots(sys, ports))
+    deduped = step_planner._dedup_snapshots(raw)
+    step_keys = {_struct_key(s.snapshot) for s in steps}
+    for _, settled in deduped[1:]:
+        assert _struct_key(settled) in step_keys, (
+            "each transition's settled state must surface as an emitted step"
+        )
+
+
+def test_c2_t3_no_consecutive_duplicate_steps():
+    """T3: no two consecutive steps render identical (Closed-relay set,
+    per-port allocation) — i.e. no leftover within-transition duplication."""
+    _, _, _, _, steps = asyncio.run(_plan_worked_example())
+
+    def sig(snap):
+        return (
+            frozenset(r.id for r in snap.relays if r.state == "Closed"),
+            tuple(sorted((c.port_id, c.allocated_kw) for c in snap.cars)),
+        )
+
+    sigs = [sig(s.snapshot) for s in steps]
+    for i, (a, b) in enumerate(zip(sigs, sigs[1:])):
+        assert a != b, f"steps {i} and {i + 1} render identical state (jump artifact)"
+
+
+def test_c2_t4_settled_warnings_persist_on_steps(monkeypatch):
+    """T4: a settled-state warning is re-injected onto every emitted sub-step
+    (guards the DP-2 ``warnings=curr_snap.warnings`` line). Engine snapshots
+    normally carry ``warnings=[]`` (A5), so we monkeypatch a sentinel warning
+    onto every settled snapshot, then assert each step carries it; dropping the
+    re-injection would leave ``_stitch_snapshot``'s hardcoded ``[]`` instead."""
+    from app.services.web_session_engine import WebSessionEngine
+
+    sentinel = "Port 2: Present (300 kW) is not deliverable [sentinel]"
+    orig = WebSessionEngine.to_visual_snapshot
+
+    def _with_warning(self):
+        snap = orig(self)
+        return snap.model_copy(update={"warnings": list(snap.warnings) + [sentinel]})
+
+    monkeypatch.setattr(WebSessionEngine, "to_visual_snapshot", _with_warning)
+
+    sys = _system(4)
+    ports = _worked_example_ports()
+
+    async def _go():
+        present_ports = [cp.model_copy(update={"max_required": cp.present}) for cp in ports]
+        target_ports = [cp.model_copy(update={"max_required": cp.target}) for cp in ports]
+        initial = (await WebSessionEngine.create(sys, present_ports)).to_visual_snapshot()
+        final = (await WebSessionEngine.create(sys, target_ports)).to_visual_snapshot()
+        return await step_planner.plan_transition(sys, ports, initial, final)
+
+    steps = asyncio.run(_go())
+    assert steps, "expected control steps for the worked-example transition"
+    for s in steps:
+        assert sentinel in s.snapshot.warnings, (
+            f"step {s.step_index} dropped the settled warning (re-injection regressed)"
+        )
+
+
+# Captured pre-fix description strings (A4). DP-1 proved descriptions are
+# byte-identical before/after the snapshot-source swap for this fixture (one
+# flip per port per transition), so this pins the player text against drift.
+_C2_EXPECTED_DESCRIPTIONS = [
+    "Close B_4_1 (Port 1 expanding to 175 kW)",
+    "Close MCU2.RELAY3 (Port 3 expanding to 200 kW)",
+    "Close MCU4.RELAY4 (Port 1 expanding to 250 kW)",
+    "Close MCU4.RELAY3 (Port 1 expanding to 325 kW)",
+]
+
+
+def test_c2_t5_description_text_unchanged():
+    """T5 (description stability): emitted step text matches the captured
+    pre-fix strings — proves the snapshot-source swap (DP-1) left text intact."""
+    _, _, _, _, steps = asyncio.run(_plan_worked_example())
+    assert [s.description for s in steps] == _C2_EXPECTED_DESCRIPTIONS
