@@ -592,8 +592,10 @@ async def plan_transition(
             attributed.append((prio, fr.id, ir, fr, port))
         attributed.sort(key=lambda x: (x[0], x[1]))
 
-        for _, _, ir, fr, port in attributed:
-            flip = _RelayFlip(
+        # Build the full flip set for THIS transition first, so _stitch_snapshot
+        # can resolve pack ownership against each port's complete flip chain.
+        transition_flips = [
+            _RelayFlip(
                 relay_id=fr.id,
                 from_state=ir.state,
                 to_state=fr.state,
@@ -602,13 +604,25 @@ async def plan_transition(
                 rec_bd_id=fr.rec_bd_id,
                 port=port,
             )
+            for _, _, ir, fr, port in attributed
+        ]
+
+        applied: Set[str] = set()
+        for flip in transition_flips:
+            applied.add(flip.relay_id)
+            stitched = _stitch_snapshot(
+                system, car_ports, prev_snap, curr_snap, applied, transition_flips
+            )
+            # _stitch_snapshot hardcodes warnings=[]; re-inject the settled
+            # transition's warnings so deliverability notices persist (DP-2).
+            stitched = stitched.model_copy(update={"warnings": curr_snap.warnings})
             port_phase = _Phase.NO_CHANGE
-            if port in ports_by_id:
-                port_phase = _phase_of(ports_by_id[port])
-            desc = _describe(flip, curr_snap, port_phase)
+            if flip.port in ports_by_id:
+                port_phase = _phase_of(ports_by_id[flip.port])
+            desc = _describe(flip, stitched, port_phase)
             steps.append(
                 ControlStep(
-                    step_index=len(steps), description=desc, snapshot=curr_snap
+                    step_index=len(steps), description=desc, snapshot=stitched
                 )
             )
 
