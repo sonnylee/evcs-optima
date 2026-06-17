@@ -21,7 +21,7 @@ echo "▶ Pushing to GitLab..."
 git push gitlab gitlab-feature:sync --force
 
 echo "▶ Cleaning up..."
-git checkout "$CURRENT_BRANCH"
+git checkout -f "$CURRENT_BRANCH"
 git branch -D gitlab-feature
 
 echo "✅ GitLab sync complete."
