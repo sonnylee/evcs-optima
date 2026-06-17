@@ -17,8 +17,7 @@ echo "▶ Committing..."
 git commit -m "chore: sync to GitLab $(date +%Y-%m-%d) — ${SYNC_MSG}"
 
 echo "▶ Pushing to GitLab..."
-#git push gitlab gitlab-sync:main --force
-git push gitlab gitlab-feature:sync --force
+git push gitlab gitlab-feature:feature --force
 
 echo "▶ Cleaning up..."
 git checkout -f "$CURRENT_BRANCH"
