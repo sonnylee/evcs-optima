@@ -8,7 +8,7 @@ echo "▶ Creating gitlab-feature branch..."
 git checkout -b gitlab-feature
 
 echo "▶ Removing .md files from index..."
-git rm -r --cached **/*.md *.md 2>/dev/null || true
+git rm -r --cached '*.md' 2>/dev/null || true
 git rm -r --cached .claude/ 2>/dev/null || true
 git checkout HEAD -- docs/README.md 2>/dev/null || true
 
